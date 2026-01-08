@@ -1,0 +1,53 @@
+# Godot 4.x
+.godot/
+
+# Godot-specific ignores
+*.translation
+
+# Mono/C# build artifacts
+.mono/
+bin/
+obj/
+
+# Import cache
+.import/
+
+# Export templates and builds
+export/
+*.exe
+*.x86_64
+*.pck
+
+# IDE
+.idea/
+.vscode/
+*.sln
+*.csproj.user
+*.suo
+*.user
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*~
+
+# Claude Code cache
+.claude/
+
+# Logs
+*.log
+
+# Backup files
+*.bak
+*.backup
+*.old
