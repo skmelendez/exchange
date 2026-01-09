@@ -74,17 +74,17 @@ public partial class CombatResolver : Node
             defender.TakeDamage(defenderDamage);
             interposeRook.TakeDamage(rookDamage);
 
-            GD.Print($"[Combat] INTERPOSE! {attacker.PieceType} attacks {defender.PieceType}: " +
+            GameLogger.Debug("Combat", $"INTERPOSE! {attacker.PieceType} attacks {defender.PieceType}: " +
                      $"Base {attacker.BaseDamage} + {diceResult.Breakdown} = {totalDamage} total. " +
                      $"Split: {defender.PieceType} takes {defenderDamage}, Rook takes {rookDamage}");
-            GD.Print($"[Combat] {defender.PieceType} HP: {defender.CurrentHp}/{defender.MaxHp}, " +
+            GameLogger.Debug("Combat", $"{defender.PieceType} HP: {defender.CurrentHp}/{defender.MaxHp}, " +
                      $"Rook HP: {interposeRook.CurrentHp}/{interposeRook.MaxHp}");
 
             // Check if Rook died from interpose
             if (!interposeRook.IsAlive)
             {
                 PieceDestroyed?.Invoke(interposeRook);
-                GD.Print($"[Combat] Rook destroyed from Interpose damage!");
+                GameLogger.Debug("Combat", "Rook destroyed from Interpose damage!");
             }
         }
         else
@@ -92,7 +92,7 @@ public partial class CombatResolver : Node
             // Normal damage application
             defender.TakeDamage(totalDamage);
 
-            GD.Print($"[Combat] {attacker.PieceType} attacks {defender.PieceType}: " +
+            GameLogger.Debug("Combat", $"{attacker.PieceType} attacks {defender.PieceType}: " +
                      $"Base {attacker.BaseDamage} + {diceResult.Breakdown} = {totalDamage} damage. " +
                      $"Defender HP: {defender.CurrentHp}/{defender.MaxHp}");
         }
@@ -101,7 +101,7 @@ public partial class CombatResolver : Node
         if (destroyed)
         {
             PieceDestroyed?.Invoke(defender);
-            GD.Print($"[Combat] {defender.PieceType} destroyed!");
+            GameLogger.Debug("Combat", $"{defender.PieceType} destroyed!");
         }
 
         var result = new CombatResult(attacker, defender, totalDamage, destroyed, diceResult);
@@ -169,7 +169,7 @@ public partial class CombatResolver : Node
 
         target.Heal(healAmount);
 
-        GD.Print($"[Heal] {healer.PieceType} heals {target.PieceType} for {healAmount}. " +
+        GameLogger.Debug("Heal", $"{healer.PieceType} heals {target.PieceType} for {healAmount}. " +
                  $"Target HP: {target.CurrentHp}/{target.MaxHp}");
 
         return healAmount;

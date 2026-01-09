@@ -7,6 +7,7 @@ namespace Exchange.Core;
 /// Static file-based logger for debugging and tracking game state.
 /// Writes to game_logs/ folder with timestamped files.
 /// Also outputs to Godot console via GD.Print.
+/// Maintains game_latest.log pointing to most recent session.
 /// </summary>
 public static class GameLogger
 {
@@ -21,8 +22,12 @@ public static class GameLogger
 
     private static StreamWriter? _writer;
     private static string? _logFilePath;
+    private static string? _logsFolder;
     private static readonly object _lock = new();
     private static bool _initialized;
+
+    private const int MaxLogFiles = 10;
+    private const string LatestLogName = "game_latest.log";
 
     /// <summary>Minimum level to log. Messages below this level are ignored.</summary>
     public static Level MinLevel { get; set; } = Level.Debug;
@@ -43,16 +48,19 @@ public static class GameLogger
             try
             {
                 // Create game_logs folder in project directory
-                string logsFolder = ProjectSettings.GlobalizePath("res://game_logs");
+                _logsFolder = ProjectSettings.GlobalizePath("res://game_logs");
 
-                if (!Directory.Exists(logsFolder))
+                if (!Directory.Exists(_logsFolder))
                 {
-                    Directory.CreateDirectory(logsFolder);
+                    Directory.CreateDirectory(_logsFolder);
                 }
+
+                // Clean up old log files (keep only MaxLogFiles)
+                CleanupOldLogs();
 
                 // Create timestamped log file
                 string timestamp = DateTime.Now.ToString("yyyy-MM-dd_HHmmss");
-                _logFilePath = Path.Combine(logsFolder, $"game_{timestamp}.log");
+                _logFilePath = Path.Combine(_logsFolder, $"game_{timestamp}.log");
 
                 _writer = new StreamWriter(_logFilePath, append: false)
                 {
@@ -70,6 +78,59 @@ public static class GameLogger
             {
                 GD.PrintErr($"[GameLogger] Failed to initialize: {ex.Message}");
             }
+        }
+    }
+
+    /// <summary>
+    /// Clean up old log files, keeping only the most recent MaxLogFiles.
+    /// </summary>
+    private static void CleanupOldLogs()
+    {
+        if (_logsFolder == null || !Directory.Exists(_logsFolder)) return;
+
+        try
+        {
+            var logFiles = new DirectoryInfo(_logsFolder)
+                .GetFiles("game_*.log")
+                .Where(f => f.Name != LatestLogName) // Don't delete game_latest.log
+                .OrderByDescending(f => f.CreationTime)
+                .ToList();
+
+            // Delete files beyond the limit (keep MaxLogFiles - 1 to make room for new one)
+            var filesToDelete = logFiles.Skip(MaxLogFiles - 1);
+            foreach (var file in filesToDelete)
+            {
+                try
+                {
+                    file.Delete();
+                }
+                catch
+                {
+                    // Ignore deletion errors
+                }
+            }
+        }
+        catch
+        {
+            // Ignore cleanup errors
+        }
+    }
+
+    /// <summary>
+    /// Copy current log to game_latest.log for easy access.
+    /// </summary>
+    private static void UpdateLatestLog()
+    {
+        if (_logsFolder == null || _logFilePath == null) return;
+
+        try
+        {
+            string latestPath = Path.Combine(_logsFolder, LatestLogName);
+            File.Copy(_logFilePath, latestPath, overwrite: true);
+        }
+        catch
+        {
+            // Ignore copy errors
         }
     }
 
@@ -175,6 +236,9 @@ public static class GameLogger
                 _writer = null;
             }
             _initialized = false;
+
+            // Update game_latest.log after closing writer
+            UpdateLatestLog();
         }
     }
 

@@ -1,4 +1,5 @@
 using Godot;
+using Exchange.Core;
 
 namespace Exchange.Map;
 
@@ -34,7 +35,7 @@ public static class MapGenerator
         int numStartingPaths = rng.RandiRange(config.MinStartingPaths, config.MaxStartingPaths);
         var startingRows = PickStartingRows(numStartingPaths, config.MaxRows, rng);
 
-        GD.Print($"[MapGen] Generating Act {config.ActNumber} with {numStartingPaths} starting paths, seed {seed}");
+        GameLogger.Info("MapGen", $"Generating Act {config.ActNumber} with {numStartingPaths} starting paths, seed {seed}");
 
         foreach (int row in startingRows)
         {
@@ -87,7 +88,7 @@ public static class MapGenerator
 
         if (prevNodes.Count == 0)
         {
-            GD.PrintErr($"[MapGen] No nodes in column {col - 1}!");
+            GameLogger.Error("MapGen", $"No nodes in column {col - 1}!");
             return;
         }
 
@@ -211,7 +212,7 @@ public static class MapGenerator
     {
         if (map.BossNode == null)
         {
-            GD.PrintErr("[MapGen] No boss node found!");
+            GameLogger.Error("MapGen", "No boss node found!");
             return;
         }
 
@@ -251,7 +252,7 @@ public static class MapGenerator
             if (nextColNodes.Count > 0)
             {
                 map.Connect(node, nextColNodes[0]);
-                GD.Print($"[MapGen] Connected disconnected node {node.Position} to {nextColNodes[0].Position}");
+                GameLogger.Debug("MapGen", $"Connected disconnected node {node.Position} to {nextColNodes[0].Position}");
             }
         }
     }
@@ -339,14 +340,14 @@ public static class MapGenerator
         {
             if (node.OutgoingConnections.Count == 0)
             {
-                GD.PrintErr($"[MapGen] Node {node.Position} has no outgoing connections!");
+                GameLogger.Error("MapGen", $"Node {node.Position} has no outgoing connections!");
             }
         }
 
         // Ensure boss has incoming connections
         if (map.BossNode != null && map.BossNode.IncomingConnections.Count == 0)
         {
-            GD.PrintErr("[MapGen] Boss node has no incoming connections!");
+            GameLogger.Error("MapGen", "Boss node has no incoming connections!");
         }
 
         // Ensure starting nodes have no incoming connections
@@ -354,7 +355,7 @@ public static class MapGenerator
         {
             if (start.IncomingConnections.Count > 0)
             {
-                GD.PrintErr($"[MapGen] Starting node {start.Position} has incoming connections!");
+                GameLogger.Error("MapGen", $"Starting node {start.Position} has incoming connections!");
             }
         }
     }

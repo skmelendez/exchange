@@ -1,4 +1,5 @@
 using Godot;
+using Exchange.Core;
 
 namespace Exchange.Map;
 
@@ -97,9 +98,14 @@ public partial class MapUI : Control
 
         // Draw AI depth indicator
         var aiDepth = _runManager?.GetCurrentAiDepth() ?? 2;
+        var isOverridden = _currentMap?.AiDepthOverride.HasValue ?? false;
+        var aiText = isOverridden
+            ? $"Enemy AI: {aiDepth}-ply lookahead (custom)"
+            : $"Enemy AI: {aiDepth}-ply lookahead";
+        var aiColor = isOverridden ? new Color(0.9f, 0.6f, 0.2f) : Colors.Gray;
         DrawString(ThemeDB.FallbackFont, new Vector2(20, 55),
-            $"Enemy AI: {aiDepth}-ply lookahead",
-            HorizontalAlignment.Left, -1, 14, Colors.Gray);
+            aiText,
+            HorizontalAlignment.Left, -1, 14, aiColor);
 
         // Draw connections first (below nodes)
         DrawConnections();
@@ -282,7 +288,7 @@ public partial class MapUI : Control
                 var expandedRect = rect.Grow(5);
                 if (expandedRect.HasPoint(clickPos))
                 {
-                    GD.Print($"[MapUI] Node {nodeId} clicked");
+                    GameLogger.Debug("MapUI", $"Node {nodeId} clicked");
                     EmitSignal(SignalName.NodeClicked, nodeId);
                     return;
                 }

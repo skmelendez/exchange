@@ -56,7 +56,7 @@ public partial class RunManager : Node
         TotalCoinsEarned = 0;
         IsRunActive = true;
 
-        GD.Print($"[Run] Starting new run with seed {RunSeed}");
+        GameLogger.Info("Run", $"Starting new run with seed {RunSeed}");
 
         // Start Act 1
         StartAct(1);
@@ -69,7 +69,7 @@ public partial class RunManager : Node
     {
         if (actNumber < 1 || actNumber > ActConfigs.Length)
         {
-            GD.PrintErr($"[Run] Invalid act number: {actNumber}");
+            GameLogger.Error("Run", $"Invalid act number: {actNumber}");
             return;
         }
 
@@ -84,7 +84,7 @@ public partial class RunManager : Node
         CurrentNode = null;
         CurrentActMap.SetCurrentNode(null);
 
-        GD.Print($"[Run] Started Act {actNumber} (AI Depth: {config.AiDepth})");
+        GameLogger.Info("Run", $"Started Act {actNumber} (AI Depth: {config.AiDepth})");
         EmitSignal(SignalName.ActStarted, actNumber);
         EmitSignal(SignalName.MapUpdated);
     }
@@ -106,13 +106,34 @@ public partial class RunManager : Node
     }
 
     /// <summary>
-    /// Get the AI depth for current act
+    /// Get the AI depth for current act (respects debug overrides)
     /// </summary>
     public int GetCurrentAiDepth()
     {
+        // Use map's effective depth if available (includes override)
+        if (CurrentActMap != null)
+            return CurrentActMap.EffectiveAiDepth;
+
+        // Fallback to config
         if (CurrentActNumber < 1 || CurrentActNumber > ActConfigs.Length)
             return 2;  // Default
         return ActConfigs[CurrentActNumber - 1].AiDepth;
+    }
+
+    /// <summary>
+    /// Update AI depth without regenerating the map (for debug menu)
+    /// </summary>
+    public void SetAiDepth(int depth)
+    {
+        if (CurrentActMap == null)
+        {
+            GameLogger.Warning("RunManager", "Cannot set AI depth: no current map");
+            return;
+        }
+
+        CurrentActMap.SetAiDepthOverride(depth);
+        GameLogger.Info("RunManager", $"AI depth updated to {depth}-ply");
+        EmitSignal(SignalName.MapUpdated);
     }
 
     /// <summary>
@@ -136,7 +157,7 @@ public partial class RunManager : Node
         CurrentNode = node;
         CurrentActMap.SetCurrentNode(node);
 
-        GD.Print($"[Run] Selected node: {node}");
+        GameLogger.Info("Run", $"Selected node: {node}");
         NodeSelected?.Invoke(node);
         EmitSignal(SignalName.MapUpdated);
 
@@ -160,7 +181,7 @@ public partial class RunManager : Node
     {
         if (CurrentNode == null) return;
 
-        GD.Print($"[Run] Node completed: {CurrentNode.NodeType} - Success: {success}, Coins: {coinsEarned}");
+        GameLogger.Info("Run", $"Node completed: {CurrentNode.NodeType} - Success: {success}, Coins: {coinsEarned}");
 
         if (CurrentNode.IsCombatNode)
         {
@@ -202,7 +223,7 @@ public partial class RunManager : Node
     /// </summary>
     private void CompleteAct()
     {
-        GD.Print($"[Run] Act {CurrentActNumber} completed!");
+        GameLogger.Info("Run", $"Act {CurrentActNumber} completed!");
         EmitSignal(SignalName.ActCompleted, CurrentActNumber);
 
         if (CurrentActNumber >= ActConfigs.Length)
@@ -224,8 +245,8 @@ public partial class RunManager : Node
     {
         IsRunActive = false;
 
-        GD.Print($"[Run] Run ended - {(victory ? "VICTORY!" : "DEFEAT")}");
-        GD.Print($"[Run] Stats: Combats Won: {TotalCombatsWon}, Coins Earned: {TotalCoinsEarned}");
+        GameLogger.Info("Run", $"Run ended - {(victory ? "VICTORY!" : "DEFEAT")}");
+        GameLogger.Info("Run", $"Stats: Combats Won: {TotalCombatsWon}, Coins Earned: {TotalCoinsEarned}");
 
         EmitSignal(SignalName.RunCompleted, victory);
     }
@@ -238,7 +259,7 @@ public partial class RunManager : Node
         if (amount <= 0) return;
         Coins += amount;
         TotalCoinsEarned += amount;
-        GD.Print($"[Run] +{amount} coins (Total: {Coins})");
+        GameLogger.Info("Run", $"+{amount} coins (Total: {Coins})");
     }
 
     /// <summary>
@@ -248,7 +269,7 @@ public partial class RunManager : Node
     {
         if (amount > Coins) return false;
         Coins -= amount;
-        GD.Print($"[Run] -{amount} coins (Total: {Coins})");
+        GameLogger.Info("Run", $"-{amount} coins (Total: {Coins})");
         return true;
     }
 

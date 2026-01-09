@@ -385,11 +385,21 @@ public partial class MainGameController : Node2D
         _mapContainer.Visible = false;
         _combatContainer.Visible = true;
 
+        // Get AI depth from current map config
+        int aiDepth = _runManager.GetCurrentAiDepth();
+
+        // Adjust for node type (elites/bosses get +1 depth)
+        if (node.NodeType == MapNodeType.Elite)
+            aiDepth = Math.Min(aiDepth + 1, 5);
+        else if (node.NodeType == MapNodeType.Boss)
+            aiDepth = Math.Min(aiDepth + 1, 5);
+
+        GameLogger.Info("MainGameController", $"Combat AI depth: {aiDepth}-ply (node type: {node.NodeType})");
+
         _combatController = new GameController();
+        _combatController.SetAiDepth(aiDepth);
         _combatController.CombatMatchEnded += OnCombatMatchEndedSignal;
         _combatContainer.AddChild(_combatController);
-
-        // TODO: Pass difficulty/AI depth to combat based on node type
     }
 
     private void OnCombatMatchEndedSignal(int winnerTeam)

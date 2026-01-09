@@ -30,6 +30,18 @@ public partial class GameController : Node2D
     private bool _isSelectingTarget = false;
     private ActionType _pendingAction = ActionType.None;
 
+    // AI configuration (set before adding to tree)
+    private int _aiDepth = 2;
+
+    /// <summary>
+    /// Set AI search depth before adding this node to the tree.
+    /// </summary>
+    public void SetAiDepth(int depth)
+    {
+        _aiDepth = depth;
+        GameLogger.Info("GameController", $"AI depth configured: {depth}-ply");
+    }
+
     public override void _Ready()
     {
         InitializeGame();
@@ -54,8 +66,10 @@ public partial class GameController : Node2D
         _combatResolver.Initialize(_gameState);
         AddChild(_combatResolver);
 
-        // Create AI controller
+        // Create AI controller with configured depth
         _aiController = new AIController();
+        _aiController.LookaheadDepth = _aiDepth;
+        GameLogger.Info("GameController", $"AI initialized with {_aiDepth}-ply search");
         AddChild(_aiController);
 
         // Create turn controller
@@ -103,12 +117,12 @@ public partial class GameController : Node2D
         {
             if (mouseButton.ButtonIndex == MouseButton.Left)
             {
-                GD.Print($"[INPUT] Left click at {mouseButton.Position}");
+                GameLogger.Debug("Input", $"Left click at {mouseButton.Position}");
                 HandleLeftClick(mouseButton.Position);
             }
             else if (mouseButton.ButtonIndex == MouseButton.Right)
             {
-                GD.Print("[INPUT] Right click - canceling");
+                GameLogger.Debug("Input", "Right click - canceling");
                 HandleRightClick();
             }
         }
@@ -182,11 +196,11 @@ public partial class GameController : Node2D
 
     private void HandleLeftClick(Vector2 screenPos)
     {
-        GD.Print($"[CLICK] IsAwaitingPlayerInput={_turnController.IsAwaitingPlayerInput}, IsPlayerTurn={_turnController.IsPlayerTurn}");
+        GameLogger.Debug("Click", $"IsAwaitingPlayerInput={_turnController.IsAwaitingPlayerInput}, IsPlayerTurn={_turnController.IsPlayerTurn}");
 
         if (!_turnController.IsAwaitingPlayerInput)
         {
-            GD.Print("[CLICK] Not awaiting player input, ignoring click");
+            GameLogger.Debug("Click", "Not awaiting player input, ignoring click");
             return;
         }
 
@@ -194,18 +208,18 @@ public partial class GameController : Node2D
         var localPos = screenPos - _board.Position;
         var boardPos = ScreenToBoardPosition(localPos);
 
-        GD.Print($"[CLICK] Board position: {boardPos.ToChessNotation()} ({boardPos})");
+        GameLogger.Debug("Click", $"Board position: {boardPos.ToChessNotation()} ({boardPos})");
 
         if (!boardPos.IsOnBoard())
         {
-            GD.Print("[CLICK] Position off board, ignoring");
+            GameLogger.Debug("Click", "Position off board, ignoring");
             return;
         }
 
         var clickedPiece = _board.GetPieceAt(boardPos);
-        GD.Print($"[CLICK] Piece at position: {(clickedPiece != null ? $"{clickedPiece.Team} {clickedPiece.PieceType}" : "none")}");
-        GD.Print($"[CLICK] Currently selected: {(_turnController.SelectedPiece != null ? $"{_turnController.SelectedPiece.Team} {_turnController.SelectedPiece.PieceType}" : "none")}");
-        GD.Print($"[CLICK] Ability phase: {_turnController.CurrentAbilityPhase}");
+        GameLogger.Debug("Click", $"Piece at position: {(clickedPiece != null ? $"{clickedPiece.Team} {clickedPiece.PieceType}" : "none")}");
+        GameLogger.Debug("Click", $"Currently selected: {(_turnController.SelectedPiece != null ? $"{_turnController.SelectedPiece.Team} {_turnController.SelectedPiece.PieceType}" : "none")}");
+        GameLogger.Debug("Click", $"Ability phase: {_turnController.CurrentAbilityPhase}");
 
         // Handle multi-step ability phases
         var abilityPhase = _turnController.CurrentAbilityPhase;
@@ -213,26 +227,26 @@ public partial class GameController : Node2D
         // Skirmish reposition: click empty tile to reposition
         if (abilityPhase == AbilityPhase.SkirmishSelectReposition && clickedPiece == null)
         {
-            GD.Print("[CLICK] Attempting Skirmish reposition...");
+            GameLogger.Debug("Click", "Attempting Skirmish reposition...");
             if (_turnController.TryReposition(boardPos))
             {
-                GD.Print("[CLICK] Skirmish reposition successful!");
+                GameLogger.Debug("Click", "Skirmish reposition successful!");
                 return;
             }
-            GD.Print("[CLICK] Skirmish reposition failed");
+            GameLogger.Debug("Click", "Skirmish reposition failed");
             return;
         }
 
         // Overextend move phase: click empty tile to move
         if (abilityPhase == AbilityPhase.OverextendSelectMove && clickedPiece == null)
         {
-            GD.Print("[CLICK] Attempting Overextend move...");
+            GameLogger.Debug("Click", "Attempting Overextend move...");
             if (_turnController.TryMove(boardPos))
             {
-                GD.Print("[CLICK] Overextend move successful!");
+                GameLogger.Debug("Click", "Overextend move successful!");
                 return;
             }
-            GD.Print("[CLICK] Overextend move failed");
+            GameLogger.Debug("Click", "Overextend move failed");
             return;
         }
 
@@ -240,13 +254,13 @@ public partial class GameController : Node2D
         if ((abilityPhase == AbilityPhase.OverextendSelectAttack || abilityPhase == AbilityPhase.SkirmishSelectAttack)
             && clickedPiece != null && clickedPiece.Team == Team.Enemy)
         {
-            GD.Print("[CLICK] Attempting ability attack...");
+            GameLogger.Debug("Click", "Attempting ability attack...");
             if (_turnController.TryAttack(boardPos))
             {
-                GD.Print("[CLICK] Ability attack successful!");
+                GameLogger.Debug("Click", "Ability attack successful!");
                 return;
             }
-            GD.Print("[CLICK] Ability attack failed");
+            GameLogger.Debug("Click", "Ability attack failed");
             return;
         }
 
@@ -256,37 +270,37 @@ public partial class GameController : Node2D
             // Try attack first if clicking enemy
             if (clickedPiece != null && clickedPiece.Team == Team.Enemy)
             {
-                GD.Print("[CLICK] Attempting attack on enemy...");
+                GameLogger.Debug("Click", "Attempting attack on enemy...");
                 if (_turnController.TryAttack(boardPos))
                 {
-                    GD.Print("[CLICK] Attack successful!");
+                    GameLogger.Debug("Click", "Attack successful!");
                     return;
                 }
-                GD.Print("[CLICK] Attack failed (not in valid attacks)");
+                GameLogger.Debug("Click", "Attack failed (not in valid attacks)");
             }
 
             // Try move if clicking empty tile
             if (clickedPiece == null)
             {
-                GD.Print("[CLICK] Attempting move to empty tile...");
+                GameLogger.Debug("Click", "Attempting move to empty tile...");
                 if (_turnController.TryMove(boardPos))
                 {
-                    GD.Print("[CLICK] Move successful!");
+                    GameLogger.Debug("Click", "Move successful!");
                     return;
                 }
-                GD.Print("[CLICK] Move failed (not in valid moves)");
+                GameLogger.Debug("Click", "Move failed (not in valid moves)");
             }
         }
 
         // Select/deselect piece
         if (clickedPiece != null && clickedPiece.Team == Team.Player)
         {
-            GD.Print($"[CLICK] Selecting player piece: {clickedPiece.PieceType}");
+            GameLogger.Debug("Click", $"Selecting player piece: {clickedPiece.PieceType}");
             _turnController.SelectPiece(clickedPiece);
         }
         else
         {
-            GD.Print("[CLICK] Deselecting (clicked empty or enemy without selection)");
+            GameLogger.Debug("Click", "Deselecting (clicked empty or enemy without selection)");
             _turnController.SelectPiece(null);
         }
     }
@@ -358,7 +372,7 @@ public partial class GameController : Node2D
 
         // Log for debugging
         if (attacks.Count > 0)
-            GD.Print($"[UI] Showing {attacks.Count} attack target(s)");
+            GameLogger.Debug("UI", $"Showing {attacks.Count} attack target(s)");
     }
 
     private void OnCombatResolved(CombatResolver.CombatResult result)

@@ -122,6 +122,12 @@ public partial class DebugMenu : CanvasLayer
         var aiRow = CreateInputRow("AI Depth:", out _aiDepthInput, 1, 6, 2);
         vbox.AddChild(aiRow);
 
+        var applyDifficultyBtn = CreateButton("Apply Difficulty", new Color(0.9f, 0.6f, 0.2f));
+        applyDifficultyBtn.Pressed += OnApplyDifficultyPressed;
+        vbox.AddChild(applyDifficultyBtn);
+
+        vbox.AddChild(CreateSeparator());
+
         var regenBtn = CreateButton("Regenerate Map", new Color(0.4f, 0.7f, 1f));
         regenBtn.Pressed += OnRegeneratePressed;
         vbox.AddChild(regenBtn);
@@ -242,15 +248,18 @@ public partial class DebugMenu : CanvasLayer
         // Update inputs to match current config
         if (_runManager.CurrentActMap != null)
         {
-            var currentSeed = _runManager.CurrentActMap.Seed;
-            var config = _runManager.CurrentActMap.Config;
-            GameLogger.Debug("DebugMenu", $"Updating display - Seed: {currentSeed}, Columns: {config.Columns}, Rows: {config.MaxRows}, AI: {config.AiDepth}");
+            var map = _runManager.CurrentActMap;
+            var config = map.Config;
+            var effectiveAiDepth = map.EffectiveAiDepth;
+            var isOverridden = map.AiDepthOverride.HasValue;
 
-            _currentSeedLabel.Text = $"Current Seed: {currentSeed}";
-            _seedInput.SetValueNoSignal(currentSeed);
+            GameLogger.Debug("DebugMenu", $"Updating display - Seed: {map.Seed}, Columns: {config.Columns}, Rows: {config.MaxRows}, AI: {effectiveAiDepth} (override: {isOverridden})");
+
+            _currentSeedLabel.Text = $"Current Seed: {map.Seed}";
+            _seedInput.SetValueNoSignal(map.Seed);
             _columnsInput.SetValueNoSignal(config.Columns);
             _rowsInput.SetValueNoSignal(config.MaxRows);
-            _aiDepthInput.SetValueNoSignal(config.AiDepth);
+            _aiDepthInput.SetValueNoSignal(effectiveAiDepth);
         }
         else
         {
@@ -263,6 +272,20 @@ public partial class DebugMenu : CanvasLayer
     {
         GameLogger.Info("DebugMenu", "Auto-Win requested");
         EmitSignal(SignalName.AutoWinRequested);
+    }
+
+    private void OnApplyDifficultyPressed()
+    {
+        if (_runManager == null)
+        {
+            GameLogger.Warning("DebugMenu", "Cannot apply difficulty: RunManager is null");
+            return;
+        }
+
+        int newDepth = (int)_aiDepthInput.Value;
+        GameLogger.Info("DebugMenu", $"Applying AI difficulty: {newDepth}-ply");
+        _runManager.SetAiDepth(newDepth);
+        UpdateCurrentStateDisplay();
     }
 
     private void OnRegeneratePressed()

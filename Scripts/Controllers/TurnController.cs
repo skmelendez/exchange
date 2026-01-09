@@ -66,7 +66,7 @@ public partial class TurnController : Node
 
     private void StartTurn()
     {
-        GD.Print($"[TURN] === StartTurn called === Phase={_gameState.CurrentPhase}, Team={_gameState.CurrentTeam}");
+        GameLogger.Debug("Turn", $"=== StartTurn called === Phase={_gameState.CurrentPhase}, Team={_gameState.CurrentTeam}");
 
         // Tick cooldowns for current team
         var currentTeamPieces = _gameState.CurrentTeam == Team.Player
@@ -95,20 +95,20 @@ public partial class TurnController : Node
         ApplyBossRulesForTurn();
 
         _awaitingAction = true;
-        GD.Print($"[TURN] _awaitingAction set to TRUE, emitting TurnStarted");
+        GameLogger.Debug("Turn", "_awaitingAction set to TRUE, emitting TurnStarted");
         TurnStarted?.Invoke(_gameState.CurrentTeam, _gameState.TurnNumber);
 
-        GD.Print($"[TURN] {_gameState.CurrentTeam}'s turn #{_gameState.TurnNumber}");
+        GameLogger.Debug("Turn", $"{_gameState.CurrentTeam}'s turn #{_gameState.TurnNumber}");
 
         // If enemy turn, trigger AI
         if (_gameState.CurrentPhase == GamePhase.EnemyTurn && _aiController != null)
         {
-            GD.Print("[TURN] Enemy turn - triggering AI...");
+            GameLogger.Debug("Turn", "Enemy turn - triggering AI...");
             _aiController.ExecuteTurn();
         }
         else
         {
-            GD.Print("[TURN] Player turn - awaiting input");
+            GameLogger.Debug("Turn", "Player turn - awaiting input");
         }
     }
 
@@ -119,7 +119,7 @@ public partial class TurnController : Node
         // Don't allow piece selection changes during multi-step ability execution
         if (_abilityPhase != AbilityPhase.None)
         {
-            GD.Print($"[SELECT] Blocked - in ability phase {_abilityPhase}");
+            GameLogger.Debug("Select", $"Blocked - in ability phase {_abilityPhase}");
             return;
         }
 
@@ -232,7 +232,7 @@ public partial class TurnController : Node
     {
         if (_abilityPhase != AbilityPhase.None)
         {
-            GD.Print($"[Ability] Cancelled {_abilityPhase}");
+            GameLogger.Debug("Ability", $"Cancelled {_abilityPhase}");
             _abilityPhase = AbilityPhase.None;
             _abilityPiece = null;
             _abilityValidPositions.Clear();
@@ -252,6 +252,40 @@ public partial class TurnController : Node
     /// </summary>
     public void ExecuteMove(BasePiece piece, Vector2I targetPosition)
     {
+        // VALIDATION: Ensure this is actually a valid move for this piece
+        var validMoves = piece.GetValidMoves(_board);
+        if (!validMoves.Contains(targetPosition))
+        {
+            GameLogger.Error("Move", $"INVALID MOVE BLOCKED! {piece.Team} {piece.PieceType} at {piece.BoardPosition.ToChessNotation()} tried to move to {targetPosition.ToChessNotation()}");
+            GameLogger.Error("Move", $"Valid moves were: [{string.Join(", ", validMoves.Select(m => m.ToChessNotation()))}]");
+
+            // Log what's blocking the path
+            var blockers = new List<string>();
+            foreach (var dir in Vector2IExtensions.AllDirections)
+            {
+                var checkPos = piece.BoardPosition + dir;
+                while (checkPos.IsOnBoard())
+                {
+                    var blocker = _board.GetPieceAt(checkPos);
+                    if (blocker != null)
+                    {
+                        blockers.Add($"{blocker.Team} {blocker.PieceType} at {checkPos.ToChessNotation()}");
+                        break;
+                    }
+                    checkPos += dir;
+                }
+            }
+            GameLogger.Error("Move", $"Pieces on board in LOS: [{string.Join(", ", blockers)}]");
+
+            // For AI, end turn anyway to prevent getting stuck
+            if (piece.Team == Team.Enemy)
+            {
+                GameLogger.Warning("Move", "AI made invalid move - ending turn to prevent stuck state");
+                EndAction(piece, ActionType.Move);
+            }
+            return;
+        }
+
         // Check if entering threat zone
         var targetTile = _board.GetTile(targetPosition);
         if (targetTile.IsThreatened(piece.Team))
@@ -260,7 +294,7 @@ public partial class TurnController : Node
         _board.MovePiece(piece, targetPosition);
         _board.RecalculateThreatZones();
 
-        GD.Print($"[Action] {piece.PieceType} moves to {targetPosition.ToChessNotation()}");
+        GameLogger.Debug("Action", $"{piece.PieceType} moves to {targetPosition.ToChessNotation()}");
 
         // Knight special rule: can still attack after moving
         if (piece is KnightPiece knight)
@@ -275,14 +309,14 @@ public partial class TurnController : Node
                 // If it's the AI's turn, let AI handle the attack decision
                 if (piece.Team == Team.Enemy)
                 {
-                    GD.Print($"[Knight] AI Knight has {_validAttacks.Count} adjacent enemy(s) - AI will decide");
+                    GameLogger.Debug("Knight", $"AI Knight has {_validAttacks.Count} adjacent enemy(s) - AI will decide");
                     // Don't wait for input, just end the move action
                     // AI will need to handle Knight attack separately if we want that behavior
                     // For now, AI Knight just ends turn after moving (simplification)
                 }
                 else
                 {
-                    GD.Print($"[Knight] May now attack {_validAttacks.Count} adjacent enemy(s) or press SPACE to end turn");
+                    GameLogger.Debug("Knight", $"May now attack {_validAttacks.Count} adjacent enemy(s) or press SPACE to end turn");
                     // Re-emit piece selected to clear old highlights, then show new attacks
                     PieceSelected?.Invoke(piece);
                     ValidMovesCalculated?.Invoke(new List<Vector2I>());
@@ -292,7 +326,7 @@ public partial class TurnController : Node
             }
             else
             {
-                GD.Print("[Knight] No adjacent enemies to attack, ending turn");
+                GameLogger.Debug("Knight", "No adjacent enemies to attack, ending turn");
             }
         }
 
@@ -304,6 +338,22 @@ public partial class TurnController : Node
     /// </summary>
     public void ExecuteAttack(BasePiece attacker, BasePiece defender)
     {
+        // VALIDATION: Ensure this is actually a valid attack for this piece
+        var validAttacks = attacker.GetAttackablePositions(_board);
+        if (!validAttacks.Contains(defender.BoardPosition))
+        {
+            GameLogger.Error("Attack", $"INVALID ATTACK BLOCKED! {attacker.Team} {attacker.PieceType} at {attacker.BoardPosition.ToChessNotation()} tried to attack {defender.PieceType} at {defender.BoardPosition.ToChessNotation()}");
+            GameLogger.Error("Attack", $"Valid attack targets were: [{string.Join(", ", validAttacks.Select(a => a.ToChessNotation()))}]");
+
+            // For AI, end turn anyway to prevent getting stuck
+            if (attacker.Team == Team.Enemy)
+            {
+                GameLogger.Warning("Attack", "AI made invalid attack - ending turn to prevent stuck state");
+                EndAction(attacker, ActionType.Attack);
+            }
+            return;
+        }
+
         var result = _combatResolver.ResolveAttack(attacker, defender, _board);
 
         if (result.DefenderDestroyed)
@@ -373,7 +423,7 @@ public partial class TurnController : Node
         else
             _gameState.EnemyRoyalDecreeActive = true;
 
-        GD.Print($"[Ability] Royal Decree activated! All {king.Team} combat rolls +1 until next turn.");
+        GameLogger.Debug("Ability", $"Royal Decree activated! All {king.Team} combat rolls +1 until next turn.");
     }
 
     private void ExecuteInterpose(RookPiece? rook)
@@ -381,7 +431,7 @@ public partial class TurnController : Node
         if (rook == null) return;
 
         rook.InterposeActive = true;
-        GD.Print($"[Ability] Interpose activated! Damage to adjacent allies will be split with Rook.");
+        GameLogger.Debug("Ability", "Interpose activated! Damage to adjacent allies will be split with Rook.");
     }
 
     #region Overextend (Queen)
@@ -391,7 +441,7 @@ public partial class TurnController : Node
         var moves = piece.GetValidMoves(_board);
         if (moves.Count == 0)
         {
-            GD.Print("[Ability] Overextend: No valid moves available!");
+            GameLogger.Debug("Ability", "Overextend: No valid moves available!");
             return;
         }
 
@@ -399,7 +449,7 @@ public partial class TurnController : Node
         _abilityPiece = piece;
         _abilityValidPositions = moves;
 
-        GD.Print($"[Ability] Overextend: Select move target ({moves.Count} options)");
+        GameLogger.Debug("Ability", $"Overextend: Select move target ({moves.Count} options)");
 
         // Show move options
         PieceSelected?.Invoke(piece);
@@ -417,16 +467,16 @@ public partial class TurnController : Node
         _board.MovePiece(piece, targetPosition);
         _board.RecalculateThreatZones();
 
-        GD.Print($"[Ability] Overextend: Queen moves to {targetPosition.ToChessNotation()}");
+        GameLogger.Debug("Ability", $"Overextend: Queen moves to {targetPosition.ToChessNotation()}");
 
         // Transition to attack phase
         var attacks = piece.GetAttackablePositions(_board);
         if (attacks.Count == 0)
         {
-            GD.Print("[Ability] Overextend: No attack targets! Queen takes 2 damage anyway.");
+            GameLogger.Debug("Ability", "Overextend: No attack targets! Queen takes 2 damage anyway.");
             piece.StartAbilityCooldown();
             piece.TakeDamage(2);
-            GD.Print($"[Ability] Overextend: Queen HP now {piece.CurrentHp}/{piece.MaxHp}");
+            GameLogger.Debug("Ability", $"Overextend: Queen HP now {piece.CurrentHp}/{piece.MaxHp}");
             CompleteOverextend(piece);
             return;
         }
@@ -434,7 +484,7 @@ public partial class TurnController : Node
         _abilityPhase = AbilityPhase.OverextendSelectAttack;
         _abilityValidPositions = attacks;
 
-        GD.Print($"[Ability] Overextend: Select attack target ({attacks.Count} options)");
+        GameLogger.Debug("Ability", $"Overextend: Select attack target ({attacks.Count} options)");
 
         // Show attack options
         ValidMovesCalculated?.Invoke(new List<Vector2I>());
@@ -462,12 +512,12 @@ public partial class TurnController : Node
 
         // Queen takes 2 self-damage
         piece.TakeDamage(2);
-        GD.Print($"[Ability] Overextend: Queen takes 2 self-damage! HP now {piece.CurrentHp}/{piece.MaxHp}");
+        GameLogger.Debug("Ability", $"Overextend: Queen takes 2 self-damage! HP now {piece.CurrentHp}/{piece.MaxHp}");
 
         // Check if Queen died from self-damage
         if (!piece.IsAlive)
         {
-            GD.Print("[Ability] Overextend: Queen died from self-damage!");
+            GameLogger.Debug("Ability", "Overextend: Queen died from self-damage!");
             _board.RemovePiece(piece);
             _board.RecalculateThreatZones();
         }
@@ -495,7 +545,7 @@ public partial class TurnController : Node
         var attacks = knight.GetAttackablePositions(_board);
         if (attacks.Count == 0)
         {
-            GD.Print("[Ability] Skirmish: No adjacent enemies to attack!");
+            GameLogger.Debug("Ability", "Skirmish: No adjacent enemies to attack!");
             return;
         }
 
@@ -503,7 +553,7 @@ public partial class TurnController : Node
         _abilityPiece = knight;
         _abilityValidPositions = attacks;
 
-        GD.Print($"[Ability] Skirmish: Select attack target ({attacks.Count} options)");
+        GameLogger.Debug("Ability", $"Skirmish: Select attack target ({attacks.Count} options)");
 
         // Show attack options
         PieceSelected?.Invoke(knight);
@@ -536,7 +586,7 @@ public partial class TurnController : Node
         var repositionTiles = knight.GetSkirmishRepositionTiles(_board);
         if (repositionTiles.Count == 0)
         {
-            GD.Print("[Ability] Skirmish: No reposition tiles available!");
+            GameLogger.Debug("Ability", "Skirmish: No reposition tiles available!");
             CompleteSkirmish(knight);
             return;
         }
@@ -544,7 +594,7 @@ public partial class TurnController : Node
         _abilityPhase = AbilityPhase.SkirmishSelectReposition;
         _abilityValidPositions = repositionTiles;
 
-        GD.Print($"[Ability] Skirmish: Select reposition tile ({repositionTiles.Count} options)");
+        GameLogger.Debug("Ability", $"Skirmish: Select reposition tile ({repositionTiles.Count} options)");
 
         // Show reposition options (as move highlights)
         ValidMovesCalculated?.Invoke(repositionTiles);
@@ -561,7 +611,7 @@ public partial class TurnController : Node
         _board.MovePiece(knight, targetPosition);
         _board.RecalculateThreatZones();
 
-        GD.Print($"[Ability] Skirmish: Knight repositions to {targetPosition.ToChessNotation()}");
+        GameLogger.Debug("Ability", $"Skirmish: Knight repositions to {targetPosition.ToChessNotation()}");
 
         CompleteSkirmish(knight);
     }
@@ -585,7 +635,7 @@ public partial class TurnController : Node
         if (target == null || target.Team != bishop.Team) return;
 
         int healed = _combatResolver.ResolveHealing(bishop, target);
-        GD.Print($"[Ability] Consecration heals {target.PieceType} for {healed}!");
+        GameLogger.Debug("Ability", $"Consecration heals {target.PieceType} for {healed}!");
     }
 
     private void ExecuteAdvance(PawnPiece? pawn)
@@ -604,7 +654,7 @@ public partial class TurnController : Node
         pawn.UsedAdvanceLastTurn = true;
         _board.RecalculateThreatZones();
 
-        GD.Print($"[Ability] Advance! Pawn moves to {target.Value.ToChessNotation()}");
+        GameLogger.Debug("Ability", $"Advance! Pawn moves to {target.Value.ToChessNotation()}");
     }
 
     private void EndAction(BasePiece piece, ActionType action)
@@ -613,14 +663,14 @@ public partial class TurnController : Node
         _awaitingAction = false;
 
         ActionCompleted?.Invoke(piece, action);
-        GD.Print($"[Action] {piece.PieceType} completed {action}");
+        GameLogger.Debug("Action", $"{piece.PieceType} completed {action}");
 
         EndTurn();
     }
 
     private void EndTurn()
     {
-        GD.Print($"[TURN] === EndTurn called === Current phase: {_gameState.CurrentPhase}");
+        GameLogger.Debug("Turn", $"=== EndTurn called === Current phase: {_gameState.CurrentPhase}");
 
         // Check king threat status for next turn bonus
         _gameState.PlayerKingThreatened = _board.IsKingThreatened(Team.Player);
@@ -630,13 +680,13 @@ public partial class TurnController : Node
         if (_gameState.IsBossMatch && _gameState.CurrentRoom == 5)
         {
             _gameState.PlayerKingThreatened = true;
-            GD.Print("[Boss Rule 5] Player King is ALWAYS threatened!");
+            GameLogger.Debug("Boss", "Rule 5: Player King is ALWAYS threatened!");
         }
 
         if (_gameState.PlayerKingThreatened)
-            GD.Print("[Status] Player King is threatened! Enemy gains +1 dice next attack.");
+            GameLogger.Debug("Status", "Player King is threatened! Enemy gains +1 dice next attack.");
         if (_gameState.EnemyKingThreatened)
-            GD.Print("[Status] Enemy King is threatened! Player gains +1 dice next attack.");
+            GameLogger.Debug("Status", "Enemy King is threatened! Player gains +1 dice next attack.");
 
         TurnEnded?.Invoke(_gameState.CurrentTeam);
 
@@ -646,7 +696,7 @@ public partial class TurnController : Node
             ? GamePhase.EnemyTurn
             : GamePhase.PlayerTurn;
 
-        GD.Print($"[TURN] Phase switched: {oldPhase} -> {_gameState.CurrentPhase}");
+        GameLogger.Debug("Turn", $"Phase switched: {oldPhase} -> {_gameState.CurrentPhase}");
 
         if (_gameState.CurrentPhase == GamePhase.PlayerTurn)
             _gameState.TurnNumber++;
@@ -655,7 +705,7 @@ public partial class TurnController : Node
         _validMoves.Clear();
         _validAttacks.Clear();
 
-        GD.Print("[TURN] Calling StartTurn for next turn...");
+        GameLogger.Debug("Turn", "Calling StartTurn for next turn...");
         StartTurn();
     }
 
@@ -664,7 +714,7 @@ public partial class TurnController : Node
         _gameState.CurrentPhase = GamePhase.MatchEnd;
         _awaitingAction = false;
 
-        GD.Print($"[Match] {winner} wins!");
+        GameLogger.Info("Match", $"{winner} wins!");
         MatchEnded?.Invoke(winner);
     }
 
@@ -681,7 +731,7 @@ public partial class TurnController : Node
         {
             case 1:
                 // Boss Rule 1: Threat penalties are -2 (handled in CombatResolver)
-                GD.Print("[Boss Rule 1] Threat penalties are -2!");
+                GameLogger.Debug("Boss", "Rule 1: Threat penalties are -2!");
                 break;
 
             case 3:
@@ -689,7 +739,7 @@ public partial class TurnController : Node
                 if (_board.EnemyKing is KingPiece enemyKing)
                 {
                     enemyKing.CanIgnoreThreatZones = true;
-                    GD.Print("[Boss Rule 3] Enemy King can move into threatened tiles!");
+                    GameLogger.Debug("Boss", "Rule 3: Enemy King can move into threatened tiles!");
                 }
                 break;
 
@@ -702,14 +752,14 @@ public partial class TurnController : Node
                     {
                         piece.AbilityCooldownCurrent = 0;
                     }
-                    GD.Print("[Boss Rule 4] Enemy abilities have no cooldowns!");
+                    GameLogger.Debug("Boss", "Rule 4: Enemy abilities have no cooldowns!");
                 }
                 break;
 
             case 5:
                 // Boss Rule 5: Player King always considered threatened
                 // This is handled in EndTurn where we set PlayerKingThreatened
-                GD.Print("[Boss Rule 5] Player King is always considered threatened!");
+                GameLogger.Debug("Boss", "Rule 5: Player King is always considered threatened!");
                 break;
         }
     }
@@ -719,7 +769,7 @@ public partial class TurnController : Node
     /// </summary>
     public void ForceMatchEnd(Team winner)
     {
-        GD.Print($"[DEBUG] ForceMatchEnd called - {winner} wins!");
+        GameLogger.Debug("Debug", $"ForceMatchEnd called - {winner} wins!");
         EndMatch(winner);
     }
 

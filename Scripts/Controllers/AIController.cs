@@ -2,16 +2,18 @@ using Godot;
 using Exchange.Core;
 using Exchange.Board;
 using Exchange.Pieces;
+using Exchange.AI;
 
 namespace Exchange.Controllers;
 
 /// <summary>
 /// Advanced AI controller for enemy decision-making.
 /// Features:
-/// - 2-ply minimax lookahead (considers opponent's best response)
-/// - Defensive awareness (protects threatened pieces)
-/// - Pawn structure evaluation
-/// - Piece coordination bonuses
+/// - True N-ply minimax with alpha-beta pruning (up to 5 depth)
+/// - Transposition table with incremental cache reuse
+/// - Zobrist hashing for fast position comparison
+/// - MVV-LVA move ordering for optimal pruning
+/// - Fallback heuristic evaluation for depth 1
 /// - Configurable depth per act for difficulty scaling
 /// </summary>
 public partial class AIController : Node
@@ -21,10 +23,21 @@ public partial class AIController : Node
     private TurnController _turnController = null!;
 
     /// <summary>
-    /// Minimax lookahead depth. Higher = smarter but slower.
-    /// Scales with act: Act 1 = 2, Act 2 = 3, Act 3 = 4
+    /// The minimax search engine with transposition tables.
+    /// Persists between turns for cache reuse.
+    /// </summary>
+    private readonly AISearchEngine _searchEngine = new();
+
+    /// <summary>
+    /// Minimax lookahead depth (1-5). Higher = smarter but slower.
+    /// Recommended: Act 1 = 2, Act 2 = 3, Act 3 = 4-5
     /// </summary>
     [Export] public int LookaheadDepth { get; set; } = 2;
+
+    /// <summary>
+    /// Use heuristic-only mode (faster, for depth 1 or testing)
+    /// </summary>
+    [Export] public bool UseHeuristicFallback { get; set; } = false;
 
     private static readonly RandomNumberGenerator _rng = new();
 
@@ -48,43 +61,119 @@ public partial class AIController : Node
 
     public async void ExecuteTurn()
     {
-        GD.Print($"[AI] === ExecuteTurn START === (Depth: {LookaheadDepth})");
+        GameLogger.Debug("AI", $"=== ExecuteTurn START === (Depth: {LookaheadDepth}, Heuristic: {UseHeuristicFallback})");
         await ToSignal(GetTree().CreateTimer(0.2f), SceneTreeTimer.SignalName.Timeout);
 
-        // TODO: Implement true n-ply minimax using LookaheadDepth
-        // Currently uses 2-ply with heuristic evaluation
-        var decision = FindBestActionWithLookahead();
+        AIDecision? decision = null;
+
+        // Use true minimax search for depth >= 2 (unless heuristic fallback is forced)
+        if (LookaheadDepth >= 2 && !UseHeuristicFallback)
+        {
+            decision = FindBestActionWithMinimax();
+        }
+
+        // Fallback to heuristic evaluation
+        if (decision == null)
+        {
+            GameLogger.Debug("AI", "Using heuristic fallback...");
+            decision = FindBestActionWithHeuristic();
+        }
 
         if (decision == null)
         {
-            GD.Print("[AI] ERROR: No valid action found!");
+            GameLogger.Error("AI", "No valid action found!");
             return;
         }
 
-        GD.Print($"[AI] Best: {decision.Piece.PieceType} {decision.Action} " +
+        GameLogger.Debug("AI", $"Best: {decision.Piece.PieceType} {decision.Action} " +
                  $"{(decision.Target.HasValue ? $"-> {decision.Target.Value.ToChessNotation()}" : "")} " +
                  $"(score: {decision.Score}, {decision.Reason})");
 
         ExecuteDecision(decision);
-        GD.Print("[AI] === ExecuteTurn END ===");
+
+        // Age transposition table entries for cache reuse
+        _searchEngine.OnMoveMade();
+
+        GameLogger.Debug("AI", "=== ExecuteTurn END ===");
     }
+
+    /// <summary>
+    /// Clears the AI search cache (call on new game/match)
+    /// </summary>
+    public void ClearSearchCache()
+    {
+        _searchEngine.ClearCache();
+        GameLogger.Debug("AI", "Search cache cleared");
+    }
+
+    #region Minimax Search
+
+    private AIDecision? FindBestActionWithMinimax()
+    {
+        GameLogger.Debug("AI", $"Starting {LookaheadDepth}-ply minimax search...");
+
+        var result = _searchEngine.FindBestMove(_board, Team.Enemy, LookaheadDepth);
+
+        if (result.BestMove == null)
+        {
+            GameLogger.Warning("AI", "Minimax search found no moves");
+            return null;
+        }
+
+        var move = result.BestMove.Value;
+
+        // Convert SimulatedMove back to AIDecision with actual piece reference
+        var piece = FindActualPiece(move.Piece);
+        if (piece == null)
+        {
+            GameLogger.Error("AI", "Could not find piece for simulated move");
+            return null;
+        }
+
+        var action = move.MoveType switch
+        {
+            SimulatedMoveType.Attack => ActionType.Attack,
+            SimulatedMoveType.Move => ActionType.Move,
+            SimulatedMoveType.Ability => ActionType.Ability,
+            _ => ActionType.Move
+        };
+
+        return new AIDecision(piece, action, move.ToPos, result.Score, result.Reason);
+    }
+
+    private BasePiece? FindActualPiece(SimulatedPiece simPiece)
+    {
+        // Find the actual piece on the board that matches the simulated piece
+        foreach (var piece in _board.EnemyPieces)
+        {
+            if (piece.BoardPosition == simPiece.Position &&
+                piece.PieceType == simPiece.PieceType &&
+                piece.Team == simPiece.Team)
+            {
+                return piece;
+            }
+        }
+        return null;
+    }
+
+    #endregion
 
     private record AIDecision(BasePiece Piece, ActionType Action, Vector2I? Target, int Score, string Reason);
 
-    #region Main Decision Making with Lookahead
+    #region Heuristic Fallback (Original Implementation)
 
-    private AIDecision? FindBestActionWithLookahead()
+    private AIDecision? FindBestActionWithHeuristic()
     {
         var candidates = new List<AIDecision>();
         int currentEval = EvaluatePosition(Team.Enemy);
 
-        GD.Print($"[AI] Position eval: {currentEval}");
+        GameLogger.Debug("AI", $"Position eval: {currentEval}");
 
         // First, check if we need to respond to threats
         var defensiveMove = FindDefensiveMove();
         if (defensiveMove != null && defensiveMove.Score > 500)
         {
-            GD.Print($"[AI] DEFENSIVE PRIORITY: {defensiveMove.Reason}");
+            GameLogger.Debug("AI", $"DEFENSIVE PRIORITY: {defensiveMove.Reason}");
             candidates.Add(defensiveMove);
         }
 
@@ -102,9 +191,9 @@ public partial class AIController : Node
         candidates = candidates.OrderByDescending(c => c.Score + _rng.RandiRange(-3, 3)).ToList();
 
         // Log top candidates
-        GD.Print("[AI] Top 3:");
+        GameLogger.Debug("AI", "Top 3:");
         foreach (var c in candidates.Take(3))
-            GD.Print($"  {c.Piece.PieceType} {c.Action} {c.Target?.ToChessNotation() ?? ""}: {c.Score} ({c.Reason})");
+            GameLogger.Debug("AI", $"  {c.Piece.PieceType} {c.Action} {c.Target?.ToChessNotation() ?? ""}: {c.Score} ({c.Reason})");
 
         return candidates[0];
     }

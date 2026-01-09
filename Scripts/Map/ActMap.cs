@@ -16,6 +16,12 @@ public class ActMap
     /// <summary>Configuration parameters used to generate this map.</summary>
     public ActConfig Config { get; }
 
+    /// <summary>Override for AI depth (set via debug menu). Null = use Config.AiDepth.</summary>
+    public int? AiDepthOverride { get; private set; }
+
+    /// <summary>Effective AI depth (override if set, otherwise config value).</summary>
+    public int EffectiveAiDepth => AiDepthOverride ?? Config.AiDepth;
+
     /// <summary>All nodes in this act map.</summary>
     public List<MapNode> Nodes { get; } = [];
 
@@ -150,16 +156,25 @@ public class ActMap
         Nodes.Where(n => n.IsAccessible).ToList();
 
     /// <summary>
+    /// Set AI depth override (for debug menu). Pass null to clear override.
+    /// </summary>
+    public void SetAiDepthOverride(int? depth)
+    {
+        AiDepthOverride = depth;
+        GameLogger.Info("ActMap", $"AI depth override set to: {depth?.ToString() ?? "null"} (effective: {EffectiveAiDepth})");
+    }
+
+    /// <summary>
     /// Debug print the map structure
     /// </summary>
     public void DebugPrint()
     {
-        GD.Print($"\n=== Act {ActNumber} Map (Seed: {Seed}) ===");
-        GD.Print($"Nodes: {Nodes.Count}, Starting: {StartingNodes.Count}");
+        GameLogger.Debug("ActMap", $"\n=== Act {ActNumber} Map (Seed: {Seed}) ===");
+        GameLogger.Debug("ActMap", $"Nodes: {Nodes.Count}, Starting: {StartingNodes.Count}");
 
         for (int col = 0; col < Config.Columns; col++)
         {
-            GD.Print($"\nColumn {col}:");
+            GameLogger.Debug("ActMap", $"\nColumn {col}:");
             for (int row = 0; row < Config.MaxRows; row++)
             {
                 var node = GetNodeAt(col, row);
@@ -170,10 +185,10 @@ public class ActMap
                         var target = GetNodeById(id);
                         return target != null ? $"{target.Position}" : "?";
                     }));
-                    GD.Print($"  [{row}] {node.NodeType,-8} -> {outgoing}");
+                    GameLogger.Debug("ActMap", $"  [{row}] {node.NodeType,-8} -> {outgoing}");
                 }
             }
         }
-        GD.Print("");
+        GameLogger.Debug("ActMap", "");
     }
 }

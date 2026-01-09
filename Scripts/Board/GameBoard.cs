@@ -64,14 +64,14 @@ public partial class GameBoard : Node2D
     {
         if (!position.IsOnBoard())
         {
-            GD.PrintErr($"Invalid board position: {position}");
+            GameLogger.Error("Board", $"Invalid board position: {position}");
             return;
         }
 
         var tile = GetTile(position);
         if (tile.IsOccupied)
         {
-            GD.PrintErr($"Tile {position.ToChessNotation()} already occupied!");
+            GameLogger.Error("Board", $"Tile {position.ToChessNotation()} already occupied!");
             return;
         }
 
