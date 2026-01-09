@@ -14,7 +14,19 @@ public partial class RookPiece : BasePiece
 {
     private const int AttackRange = 3; // "short straight-line range"
 
+    /// <summary>
+    /// Tracks if Interpose ability is currently active (damage to adjacent allies split with Rook)
+    /// </summary>
+    public bool InterposeActive { get; set; } = false;
+
     public RookPiece(Team team) : base(PieceType.Rook, team) { }
+
+    public override void ResetTurnState()
+    {
+        base.ResetTurnState();
+        // Interpose lasts until the Rook's next turn, then deactivates
+        InterposeActive = false;
+    }
 
     public override List<Vector2I> GetValidMoves(GameBoard board)
     {

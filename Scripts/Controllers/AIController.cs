@@ -6,11 +6,13 @@ using Exchange.Pieces;
 namespace Exchange.Controllers;
 
 /// <summary>
-/// Advanced AI with:
+/// Advanced AI controller for enemy decision-making.
+/// Features:
 /// - 2-ply minimax lookahead (considers opponent's best response)
 /// - Defensive awareness (protects threatened pieces)
 /// - Pawn structure evaluation
 /// - Piece coordination bonuses
+/// - Configurable depth per act for difficulty scaling
 /// </summary>
 public partial class AIController : Node
 {
@@ -18,7 +20,13 @@ public partial class AIController : Node
     private GameState _gameState = null!;
     private TurnController _turnController = null!;
 
-    private static readonly Random _random = new();
+    /// <summary>
+    /// Minimax lookahead depth. Higher = smarter but slower.
+    /// Scales with act: Act 1 = 2, Act 2 = 3, Act 3 = 4
+    /// </summary>
+    [Export] public int LookaheadDepth { get; set; } = 2;
+
+    private static readonly RandomNumberGenerator _rng = new();
 
     // Piece values (centipawn-like scale)
     private static readonly Dictionary<PieceType, int> PieceValues = new()
@@ -40,9 +48,11 @@ public partial class AIController : Node
 
     public async void ExecuteTurn()
     {
-        GD.Print("[AI] === ExecuteTurn START ===");
+        GD.Print($"[AI] === ExecuteTurn START === (Depth: {LookaheadDepth})");
         await ToSignal(GetTree().CreateTimer(0.2f), SceneTreeTimer.SignalName.Timeout);
 
+        // TODO: Implement true n-ply minimax using LookaheadDepth
+        // Currently uses 2-ply with heuristic evaluation
         var decision = FindBestActionWithLookahead();
 
         if (decision == null)
@@ -88,8 +98,8 @@ public partial class AIController : Node
         if (candidates.Count == 0)
             return null;
 
-        // Sort and pick best
-        candidates = candidates.OrderByDescending(c => c.Score + _random.Next(-3, 4)).ToList();
+        // Sort and pick best (add small random variance to prevent predictable ties)
+        candidates = candidates.OrderByDescending(c => c.Score + _rng.RandiRange(-3, 3)).ToList();
 
         // Log top candidates
         GD.Print("[AI] Top 3:");

@@ -5,31 +5,41 @@ namespace Exchange.Combat;
 /// <summary>
 /// Handles all dice rolling with full transparency as per design doc.
 /// All rolls are 1d6 with various modifiers.
+/// Uses Godot's built-in RNG for consistency with engine systems.
 /// </summary>
 public static class DiceRoller
 {
-    private static Random _random = new();
+    private static RandomNumberGenerator _rng = new();
 
+    /// <summary>
+    /// Result of a dice roll including breakdown for transparency.
+    /// </summary>
+    /// <param name="RawRoll">The unmodified die face (1-6)</param>
+    /// <param name="Modifiers">Sum of all applied modifiers</param>
+    /// <param name="FinalValue">Clamped result after modifiers</param>
+    /// <param name="Breakdown">Human-readable breakdown string</param>
     public record DiceResult(int RawRoll, int Modifiers, int FinalValue, string Breakdown);
 
     /// <summary>
     /// Rolls 1d6 for combat with all applicable modifiers.
     /// </summary>
+    /// <param name="threatPenalty">Threat zone penalty amount (normally -1, but -2 for Boss Room 1)</param>
     public static DiceResult RollCombat(
         int baseModifier = 0,
         bool enteredThreatZone = false,
         bool royalDecreeActive = false,
-        bool enemyKingWasThreatened = false)
+        bool enemyKingWasThreatened = false,
+        int threatPenalty = -1)
     {
         int raw = Roll();
         int mods = baseModifier;
         var breakdown = new List<string> { $"Roll: {raw}" };
 
-        // Threat zone penalty: -1 to piece's next combat roll
+        // Threat zone penalty: normally -1, but -2 for Boss Room 1
         if (enteredThreatZone)
         {
-            mods -= 1;
-            breakdown.Add("Threat Zone: -1");
+            mods += threatPenalty;
+            breakdown.Add($"Threat Zone: {threatPenalty}");
         }
 
         // Royal Decree: +1 to all allied combat rolls
@@ -73,15 +83,25 @@ public static class DiceRoller
     }
 
     /// <summary>
-    /// Raw 1d6 roll
+    /// Raw 1d6 roll using Godot's RandomNumberGenerator.
     /// </summary>
-    public static int Roll() => _random.Next(1, 7);
+    /// <returns>Integer from 1 to 6 inclusive</returns>
+    public static int Roll() => _rng.RandiRange(1, 6);
 
     /// <summary>
-    /// For testing/debugging: set a specific seed
+    /// Sets a specific seed for deterministic testing/debugging.
     /// </summary>
-    public static void SetSeed(int seed)
+    /// <param name="seed">The seed value to use</param>
+    public static void SetSeed(ulong seed)
     {
-        _random = new Random(seed);
+        _rng.Seed = seed;
+    }
+
+    /// <summary>
+    /// Randomizes the seed using system time (default behavior).
+    /// </summary>
+    public static void Randomize()
+    {
+        _rng.Randomize();
     }
 }

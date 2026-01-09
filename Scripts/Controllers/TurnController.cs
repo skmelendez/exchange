@@ -32,9 +32,15 @@ public partial class TurnController : Node
     private List<Vector2I> _validAttacks = new();
     private bool _awaitingAction = false;
 
+    // Multi-step ability state
+    private AbilityPhase _abilityPhase = AbilityPhase.None;
+    private BasePiece? _abilityPiece;
+    private List<Vector2I> _abilityValidPositions = new();
+
     public BasePiece? SelectedPiece => _selectedPiece;
     public bool IsPlayerTurn => _gameState.CurrentPhase == GamePhase.PlayerTurn;
     public bool IsAwaitingPlayerInput => IsPlayerTurn && _awaitingAction;
+    public AbilityPhase CurrentAbilityPhase => _abilityPhase;
 
     public void Initialize(GameState gameState, GameBoard board, CombatResolver combatResolver, AIController? aiController = null)
     {
@@ -85,6 +91,9 @@ public partial class TurnController : Node
         else
             _gameState.EnemyRoyalDecreeActive = false;
 
+        // Apply Boss Rules
+        ApplyBossRulesForTurn();
+
         _awaitingAction = true;
         GD.Print($"[TURN] _awaitingAction set to TRUE, emitting TurnStarted");
         TurnStarted?.Invoke(_gameState.CurrentTeam, _gameState.TurnNumber);
@@ -106,6 +115,14 @@ public partial class TurnController : Node
     public void SelectPiece(BasePiece? piece)
     {
         if (!IsAwaitingPlayerInput) return;
+
+        // Don't allow piece selection changes during multi-step ability execution
+        if (_abilityPhase != AbilityPhase.None)
+        {
+            GD.Print($"[SELECT] Blocked - in ability phase {_abilityPhase}");
+            return;
+        }
+
         if (piece != null && piece.Team != Team.Player) return;
 
         _selectedPiece = piece;
@@ -131,7 +148,17 @@ public partial class TurnController : Node
 
     public bool TryMove(Vector2I targetPosition)
     {
-        if (!IsAwaitingPlayerInput || _selectedPiece == null) return false;
+        if (!IsAwaitingPlayerInput) return false;
+
+        // Handle Overextend move phase
+        if (_abilityPhase == AbilityPhase.OverextendSelectMove && _abilityPiece != null)
+        {
+            if (!_abilityValidPositions.Contains(targetPosition)) return false;
+            ExecuteOverextendMove(_abilityPiece, targetPosition);
+            return true;
+        }
+
+        if (_selectedPiece == null) return false;
         if (!_validMoves.Contains(targetPosition)) return false;
 
         ExecuteMove(_selectedPiece, targetPosition);
@@ -140,13 +167,35 @@ public partial class TurnController : Node
 
     public bool TryAttack(Vector2I targetPosition)
     {
-        if (!IsAwaitingPlayerInput || _selectedPiece == null) return false;
+        if (!IsAwaitingPlayerInput) return false;
+
+        // Handle Overextend attack phase
+        if (_abilityPhase == AbilityPhase.OverextendSelectAttack && _abilityPiece != null)
+        {
+            if (!_abilityValidPositions.Contains(targetPosition)) return false;
+            var target = _board.GetPieceAt(targetPosition);
+            if (target == null) return false;
+            ExecuteOverextendAttack(_abilityPiece, target);
+            return true;
+        }
+
+        // Handle Skirmish attack phase
+        if (_abilityPhase == AbilityPhase.SkirmishSelectAttack && _abilityPiece != null)
+        {
+            if (!_abilityValidPositions.Contains(targetPosition)) return false;
+            var target = _board.GetPieceAt(targetPosition);
+            if (target == null) return false;
+            ExecuteSkirmishAttack(_abilityPiece as KnightPiece, target);
+            return true;
+        }
+
+        if (_selectedPiece == null) return false;
         if (!_validAttacks.Contains(targetPosition)) return false;
 
-        var target = _board.GetPieceAt(targetPosition);
-        if (target == null) return false;
+        var attackTarget = _board.GetPieceAt(targetPosition);
+        if (attackTarget == null) return false;
 
-        ExecuteAttack(_selectedPiece, target);
+        ExecuteAttack(_selectedPiece, attackTarget);
         return true;
     }
 
@@ -157,6 +206,45 @@ public partial class TurnController : Node
 
         ExecuteAbility(_selectedPiece, targetPosition);
         return true;
+    }
+
+    /// <summary>
+    /// Handle Skirmish reposition phase
+    /// </summary>
+    public bool TryReposition(Vector2I targetPosition)
+    {
+        if (!IsAwaitingPlayerInput) return false;
+
+        if (_abilityPhase == AbilityPhase.SkirmishSelectReposition && _abilityPiece is KnightPiece knight)
+        {
+            if (!_abilityValidPositions.Contains(targetPosition)) return false;
+            ExecuteSkirmishReposition(knight, targetPosition);
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Cancel multi-step ability execution
+    /// </summary>
+    public void CancelAbility()
+    {
+        if (_abilityPhase != AbilityPhase.None)
+        {
+            GD.Print($"[Ability] Cancelled {_abilityPhase}");
+            _abilityPhase = AbilityPhase.None;
+            _abilityPiece = null;
+            _abilityValidPositions.Clear();
+
+            // Re-emit selection to restore normal UI
+            PieceSelected?.Invoke(_selectedPiece);
+            if (_selectedPiece != null)
+            {
+                ValidMovesCalculated?.Invoke(_selectedPiece.GetValidMoves(_board));
+                ValidAttacksCalculated?.Invoke(_selectedPiece.GetAttackablePositions(_board));
+            }
+        }
     }
 
     /// <summary>
@@ -239,40 +327,43 @@ public partial class TurnController : Node
     /// </summary>
     public void ExecuteAbility(BasePiece piece, Vector2I? targetPosition)
     {
-        piece.StartAbilityCooldown();
-
         switch (piece.AbilityId)
         {
             case AbilityId.RoyalDecree:
+                piece.StartAbilityCooldown();
                 ExecuteRoyalDecree(piece);
+                EndAction(piece, ActionType.Ability);
                 break;
 
             case AbilityId.Overextend:
-                // This is a special case - needs move then attack selection
-                // For now, we'll handle it in a simplified way
-                GD.Print("[Ability] Overextend requires move+attack selection (TODO: full implementation)");
+                StartOverextend(piece);
+                // Don't end action yet - multi-step
                 break;
 
             case AbilityId.Interpose:
-                ExecuteInterpose(piece);
+                piece.StartAbilityCooldown();
+                ExecuteInterpose(piece as RookPiece);
+                EndAction(piece, ActionType.Ability);
                 break;
 
             case AbilityId.Consecration:
+                piece.StartAbilityCooldown();
                 if (targetPosition.HasValue)
                     ExecuteConsecration(piece as BishopPiece, targetPosition.Value);
+                EndAction(piece, ActionType.Ability);
                 break;
 
             case AbilityId.Skirmish:
-                // Attack then reposition - needs target selection
-                GD.Print("[Ability] Skirmish requires attack+reposition selection (TODO: full implementation)");
+                StartSkirmish(piece as KnightPiece);
+                // Don't end action yet - multi-step
                 break;
 
             case AbilityId.Advance:
+                piece.StartAbilityCooldown();
                 ExecuteAdvance(piece as PawnPiece);
+                EndAction(piece, ActionType.Ability);
                 break;
         }
-
-        EndAction(piece, ActionType.Ability);
     }
 
     private void ExecuteRoyalDecree(BasePiece king)
@@ -285,12 +376,206 @@ public partial class TurnController : Node
         GD.Print($"[Ability] Royal Decree activated! All {king.Team} combat rolls +1 until next turn.");
     }
 
-    private void ExecuteInterpose(BasePiece rook)
+    private void ExecuteInterpose(RookPiece? rook)
     {
-        // Interpose is a persistent effect tracked separately
-        // For now, log it - full implementation needs effect system
-        GD.Print($"[Ability] Interpose activated! Damage to adjacent allies will be split.");
+        if (rook == null) return;
+
+        rook.InterposeActive = true;
+        GD.Print($"[Ability] Interpose activated! Damage to adjacent allies will be split with Rook.");
     }
+
+    #region Overextend (Queen)
+
+    private void StartOverextend(BasePiece piece)
+    {
+        var moves = piece.GetValidMoves(_board);
+        if (moves.Count == 0)
+        {
+            GD.Print("[Ability] Overextend: No valid moves available!");
+            return;
+        }
+
+        _abilityPhase = AbilityPhase.OverextendSelectMove;
+        _abilityPiece = piece;
+        _abilityValidPositions = moves;
+
+        GD.Print($"[Ability] Overextend: Select move target ({moves.Count} options)");
+
+        // Show move options
+        PieceSelected?.Invoke(piece);
+        ValidMovesCalculated?.Invoke(moves);
+        ValidAttacksCalculated?.Invoke(new List<Vector2I>());
+    }
+
+    private void ExecuteOverextendMove(BasePiece piece, Vector2I targetPosition)
+    {
+        // Check threat zone
+        var targetTile = _board.GetTile(targetPosition);
+        if (targetTile.IsThreatened(piece.Team))
+            piece.EnteredThreatZoneThisTurn = true;
+
+        _board.MovePiece(piece, targetPosition);
+        _board.RecalculateThreatZones();
+
+        GD.Print($"[Ability] Overextend: Queen moves to {targetPosition.ToChessNotation()}");
+
+        // Transition to attack phase
+        var attacks = piece.GetAttackablePositions(_board);
+        if (attacks.Count == 0)
+        {
+            GD.Print("[Ability] Overextend: No attack targets! Queen takes 2 damage anyway.");
+            piece.StartAbilityCooldown();
+            piece.TakeDamage(2);
+            GD.Print($"[Ability] Overextend: Queen HP now {piece.CurrentHp}/{piece.MaxHp}");
+            CompleteOverextend(piece);
+            return;
+        }
+
+        _abilityPhase = AbilityPhase.OverextendSelectAttack;
+        _abilityValidPositions = attacks;
+
+        GD.Print($"[Ability] Overextend: Select attack target ({attacks.Count} options)");
+
+        // Show attack options
+        ValidMovesCalculated?.Invoke(new List<Vector2I>());
+        ValidAttacksCalculated?.Invoke(attacks);
+    }
+
+    private void ExecuteOverextendAttack(BasePiece piece, BasePiece target)
+    {
+        piece.StartAbilityCooldown();
+
+        var result = _combatResolver.ResolveAttack(piece, target, _board);
+
+        if (result.DefenderDestroyed)
+        {
+            _board.RemovePiece(target);
+            _board.RecalculateThreatZones();
+
+            // Check win condition
+            if (target.PieceType == PieceType.King)
+            {
+                EndMatch(piece.Team);
+                return;
+            }
+        }
+
+        // Queen takes 2 self-damage
+        piece.TakeDamage(2);
+        GD.Print($"[Ability] Overextend: Queen takes 2 self-damage! HP now {piece.CurrentHp}/{piece.MaxHp}");
+
+        // Check if Queen died from self-damage
+        if (!piece.IsAlive)
+        {
+            GD.Print("[Ability] Overextend: Queen died from self-damage!");
+            _board.RemovePiece(piece);
+            _board.RecalculateThreatZones();
+        }
+
+        CompleteOverextend(piece);
+    }
+
+    private void CompleteOverextend(BasePiece piece)
+    {
+        _abilityPhase = AbilityPhase.None;
+        _abilityPiece = null;
+        _abilityValidPositions.Clear();
+
+        EndAction(piece, ActionType.Ability);
+    }
+
+    #endregion
+
+    #region Skirmish (Knight)
+
+    private void StartSkirmish(KnightPiece? knight)
+    {
+        if (knight == null) return;
+
+        var attacks = knight.GetAttackablePositions(_board);
+        if (attacks.Count == 0)
+        {
+            GD.Print("[Ability] Skirmish: No adjacent enemies to attack!");
+            return;
+        }
+
+        _abilityPhase = AbilityPhase.SkirmishSelectAttack;
+        _abilityPiece = knight;
+        _abilityValidPositions = attacks;
+
+        GD.Print($"[Ability] Skirmish: Select attack target ({attacks.Count} options)");
+
+        // Show attack options
+        PieceSelected?.Invoke(knight);
+        ValidMovesCalculated?.Invoke(new List<Vector2I>());
+        ValidAttacksCalculated?.Invoke(attacks);
+    }
+
+    private void ExecuteSkirmishAttack(KnightPiece? knight, BasePiece target)
+    {
+        if (knight == null) return;
+
+        knight.StartAbilityCooldown();
+
+        var result = _combatResolver.ResolveAttack(knight, target, _board);
+
+        if (result.DefenderDestroyed)
+        {
+            _board.RemovePiece(target);
+            _board.RecalculateThreatZones();
+
+            // Check win condition
+            if (target.PieceType == PieceType.King)
+            {
+                EndMatch(knight.Team);
+                return;
+            }
+        }
+
+        // Transition to reposition phase
+        var repositionTiles = knight.GetSkirmishRepositionTiles(_board);
+        if (repositionTiles.Count == 0)
+        {
+            GD.Print("[Ability] Skirmish: No reposition tiles available!");
+            CompleteSkirmish(knight);
+            return;
+        }
+
+        _abilityPhase = AbilityPhase.SkirmishSelectReposition;
+        _abilityValidPositions = repositionTiles;
+
+        GD.Print($"[Ability] Skirmish: Select reposition tile ({repositionTiles.Count} options)");
+
+        // Show reposition options (as move highlights)
+        ValidMovesCalculated?.Invoke(repositionTiles);
+        ValidAttacksCalculated?.Invoke(new List<Vector2I>());
+    }
+
+    private void ExecuteSkirmishReposition(KnightPiece knight, Vector2I targetPosition)
+    {
+        // Check threat zone
+        var targetTile = _board.GetTile(targetPosition);
+        if (targetTile.IsThreatened(knight.Team))
+            knight.EnteredThreatZoneThisTurn = true;
+
+        _board.MovePiece(knight, targetPosition);
+        _board.RecalculateThreatZones();
+
+        GD.Print($"[Ability] Skirmish: Knight repositions to {targetPosition.ToChessNotation()}");
+
+        CompleteSkirmish(knight);
+    }
+
+    private void CompleteSkirmish(KnightPiece knight)
+    {
+        _abilityPhase = AbilityPhase.None;
+        _abilityPiece = null;
+        _abilityValidPositions.Clear();
+
+        EndAction(knight, ActionType.Ability);
+    }
+
+    #endregion
 
     private void ExecuteConsecration(BishopPiece? bishop, Vector2I targetPos)
     {
@@ -341,6 +626,13 @@ public partial class TurnController : Node
         _gameState.PlayerKingThreatened = _board.IsKingThreatened(Team.Player);
         _gameState.EnemyKingThreatened = _board.IsKingThreatened(Team.Enemy);
 
+        // Boss Rule 5: Player King is always considered threatened during Room 5 Boss
+        if (_gameState.IsBossMatch && _gameState.CurrentRoom == 5)
+        {
+            _gameState.PlayerKingThreatened = true;
+            GD.Print("[Boss Rule 5] Player King is ALWAYS threatened!");
+        }
+
         if (_gameState.PlayerKingThreatened)
             GD.Print("[Status] Player King is threatened! Enemy gains +1 dice next attack.");
         if (_gameState.EnemyKingThreatened)
@@ -374,6 +666,61 @@ public partial class TurnController : Node
 
         GD.Print($"[Match] {winner} wins!");
         MatchEnded?.Invoke(winner);
+    }
+
+    /// <summary>
+    /// Apply boss rules at the start of each turn
+    /// </summary>
+    private void ApplyBossRulesForTurn()
+    {
+        if (!_gameState.IsBossMatch) return;
+
+        int bossRoom = _gameState.CurrentRoom;
+
+        switch (bossRoom)
+        {
+            case 1:
+                // Boss Rule 1: Threat penalties are -2 (handled in CombatResolver)
+                GD.Print("[Boss Rule 1] Threat penalties are -2!");
+                break;
+
+            case 3:
+                // Boss Rule 3: Enemy King can move into threatened tiles
+                if (_board.EnemyKing is KingPiece enemyKing)
+                {
+                    enemyKing.CanIgnoreThreatZones = true;
+                    GD.Print("[Boss Rule 3] Enemy King can move into threatened tiles!");
+                }
+                break;
+
+            case 4:
+                // Boss Rule 4: Enemy abilities have no cooldowns
+                // Reset all enemy cooldowns to 0 at start of enemy turn
+                if (_gameState.CurrentTeam == Team.Enemy)
+                {
+                    foreach (var piece in _board.EnemyPieces)
+                    {
+                        piece.AbilityCooldownCurrent = 0;
+                    }
+                    GD.Print("[Boss Rule 4] Enemy abilities have no cooldowns!");
+                }
+                break;
+
+            case 5:
+                // Boss Rule 5: Player King always considered threatened
+                // This is handled in EndTurn where we set PlayerKingThreatened
+                GD.Print("[Boss Rule 5] Player King is always considered threatened!");
+                break;
+        }
+    }
+
+    /// <summary>
+    /// DEBUG: Force end the match with a specific winner
+    /// </summary>
+    public void ForceMatchEnd(Team winner)
+    {
+        GD.Print($"[DEBUG] ForceMatchEnd called - {winner} wins!");
+        EndMatch(winner);
     }
 
     /// <summary>

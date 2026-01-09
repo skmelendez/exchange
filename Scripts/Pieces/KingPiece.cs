@@ -13,6 +13,12 @@ namespace Exchange.Pieces;
 /// </summary>
 public partial class KingPiece : BasePiece
 {
+    /// <summary>
+    /// Boss Rule 3: Enemy King can move into threatened tiles during Room 3 Boss.
+    /// Set by TurnController at start of each turn.
+    /// </summary>
+    public bool CanIgnoreThreatZones { get; set; } = false;
+
     public KingPiece(Team team) : base(PieceType.King, team) { }
 
     public override List<Vector2I> GetValidMoves(GameBoard board)
@@ -27,9 +33,12 @@ public partial class KingPiece : BasePiece
             // Cannot move to occupied tiles
             if (board.IsOccupied(pos)) continue;
 
-            // King cannot move into threatened tiles
-            var tile = board.GetTile(pos);
-            if (tile.IsThreatened(Team)) continue;
+            // King cannot move into threatened tiles (unless Boss Rule 3 is active)
+            if (!CanIgnoreThreatZones)
+            {
+                var tile = board.GetTile(pos);
+                if (tile.IsThreatened(Team)) continue;
+            }
 
             moves.Add(pos);
         }

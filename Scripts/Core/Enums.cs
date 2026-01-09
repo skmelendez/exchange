@@ -63,3 +63,19 @@ public enum MatchType
     Mid,
     Boss
 }
+
+/// <summary>
+/// Tracks multi-step ability execution phases
+/// </summary>
+public enum AbilityPhase
+{
+    None,
+
+    // Overextend (Queen): Move -> Attack -> Self-damage
+    OverextendSelectMove,
+    OverextendSelectAttack,
+
+    // Skirmish (Knight): Attack -> Reposition
+    SkirmishSelectAttack,
+    SkirmishSelectReposition
+}

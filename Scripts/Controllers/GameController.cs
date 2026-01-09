@@ -7,12 +7,18 @@ using Exchange.UI;
 
 namespace Exchange.Controllers;
 
+// Note: ESC key for pause menu is handled by GameManager/MainGameController.
+// This controller only handles in-combat cancellation (selection, abilities).
+
 /// <summary>
 /// Main game controller that wires all systems together.
 /// Handles input and coordinates between board, turn controller, and UI.
 /// </summary>
 public partial class GameController : Node2D
 {
+    /// <summary>Emitted when combat match ends. Parameter is winner team (0=Player, 1=Enemy).</summary>
+    [Signal] public delegate void CombatMatchEndedEventHandler(int winnerTeam);
+
     private GameState _gameState = null!;
     private GameBoard _board = null!;
     private TurnController _turnController = null!;
@@ -107,17 +113,14 @@ public partial class GameController : Node2D
             }
         }
 
-        // Keyboard shortcuts
+        // Keyboard shortcuts (ESC handled by parent - see HandleCancelInput)
         if (@event is InputEventKey key && key.Pressed)
         {
-            GD.Print($"[INPUT] Key pressed: {key.Keycode}");
+            GameLogger.Debug("GameController", $"Key pressed: {key.Keycode}");
             switch (key.Keycode)
             {
-                case Key.Escape:
-                    CancelSelection();
-                    break;
                 case Key.Space:
-                    GD.Print("[INPUT] Space - Knight end turn");
+                    GameLogger.Debug("GameController", "Space - Knight end turn");
                     _turnController.KnightEndTurnWithoutAttack();
                     break;
                 case Key.A:
@@ -125,11 +128,55 @@ public partial class GameController : Node2D
                         _pendingAction = ActionType.Attack;
                     break;
                 case Key.E:
-                    GD.Print("[INPUT] E - Use ability");
+                    GameLogger.Debug("GameController", "E - Use ability");
                     if (_turnController.SelectedPiece != null && _turnController.SelectedPiece.CanUseAbility)
                         _turnController.TryUseAbility();
                     break;
             }
+        }
+    }
+
+    /// <summary>
+    /// Handle cancel input (ESC key) - called by parent controller.
+    /// Cancels abilities or piece selection in combat.
+    /// </summary>
+    public void HandleCancelInput()
+    {
+        GameLogger.Debug("GameController", "Cancel input received");
+
+        if (_turnController.CurrentAbilityPhase != AbilityPhase.None)
+        {
+            GameLogger.Debug("GameController", "Canceling ability");
+            _turnController.CancelAbility();
+        }
+        else
+        {
+            CancelSelection();
+        }
+    }
+
+    /// <summary>
+    /// Called externally (from debug menu) to force win the current match.
+    /// </summary>
+    public void ForceAutoWin()
+    {
+        if (_gameState.CurrentPhase == GamePhase.MatchEnd)
+        {
+            GameLogger.Warning("GameController", "Force auto-win called but match already ended");
+            return;
+        }
+
+        // Kill the enemy king to trigger win
+        if (_board.EnemyKing != null)
+        {
+            GameLogger.Info("GameController", $"[DEBUG] Force destroying enemy King at {_board.EnemyKing.BoardPosition.ToChessNotation()}");
+            _board.EnemyKing.TakeDamage(9999);
+            _board.RemovePiece(_board.EnemyKing);
+            _turnController.ForceMatchEnd(Team.Player);
+        }
+        else
+        {
+            GameLogger.Error("GameController", "Force auto-win failed - no enemy King found!");
         }
     }
 
@@ -158,6 +205,50 @@ public partial class GameController : Node2D
         var clickedPiece = _board.GetPieceAt(boardPos);
         GD.Print($"[CLICK] Piece at position: {(clickedPiece != null ? $"{clickedPiece.Team} {clickedPiece.PieceType}" : "none")}");
         GD.Print($"[CLICK] Currently selected: {(_turnController.SelectedPiece != null ? $"{_turnController.SelectedPiece.Team} {_turnController.SelectedPiece.PieceType}" : "none")}");
+        GD.Print($"[CLICK] Ability phase: {_turnController.CurrentAbilityPhase}");
+
+        // Handle multi-step ability phases
+        var abilityPhase = _turnController.CurrentAbilityPhase;
+
+        // Skirmish reposition: click empty tile to reposition
+        if (abilityPhase == AbilityPhase.SkirmishSelectReposition && clickedPiece == null)
+        {
+            GD.Print("[CLICK] Attempting Skirmish reposition...");
+            if (_turnController.TryReposition(boardPos))
+            {
+                GD.Print("[CLICK] Skirmish reposition successful!");
+                return;
+            }
+            GD.Print("[CLICK] Skirmish reposition failed");
+            return;
+        }
+
+        // Overextend move phase: click empty tile to move
+        if (abilityPhase == AbilityPhase.OverextendSelectMove && clickedPiece == null)
+        {
+            GD.Print("[CLICK] Attempting Overextend move...");
+            if (_turnController.TryMove(boardPos))
+            {
+                GD.Print("[CLICK] Overextend move successful!");
+                return;
+            }
+            GD.Print("[CLICK] Overextend move failed");
+            return;
+        }
+
+        // Overextend/Skirmish attack phase: click enemy to attack
+        if ((abilityPhase == AbilityPhase.OverextendSelectAttack || abilityPhase == AbilityPhase.SkirmishSelectAttack)
+            && clickedPiece != null && clickedPiece.Team == Team.Enemy)
+        {
+            GD.Print("[CLICK] Attempting ability attack...");
+            if (_turnController.TryAttack(boardPos))
+            {
+                GD.Print("[CLICK] Ability attack successful!");
+                return;
+            }
+            GD.Print("[CLICK] Ability attack failed");
+            return;
+        }
 
         // If we have a selected piece, try to act
         if (_turnController.SelectedPiece != null)
@@ -229,6 +320,10 @@ public partial class GameController : Node2D
     private void OnMatchEnded(Team winner)
     {
         _ui.ShowMatchResult(winner);
+        GameLogger.Info("GameController", $"Match ended - Winner: {winner}");
+
+        // Emit signal for MainGameController to handle
+        EmitSignal(SignalName.CombatMatchEnded, (int)winner);
     }
 
     private void OnPieceSelected(BasePiece? piece)

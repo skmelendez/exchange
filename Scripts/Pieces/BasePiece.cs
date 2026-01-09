@@ -6,31 +6,54 @@ namespace Exchange.Pieces;
 
 /// <summary>
 /// Base class for all chess pieces. Handles HP, movement patterns, and ability state.
+/// Pieces are Node2D instances that live as children of GameBoard.
 /// </summary>
 public abstract partial class BasePiece : Node2D
 {
+    /// <summary>Emitted when piece HP changes.</summary>
     [Signal] public delegate void HealthChangedEventHandler(int newHealth, int maxHealth);
+
+    /// <summary>Emitted when piece HP reaches zero.</summary>
     [Signal] public delegate void PieceDiedEventHandler(BasePiece piece);
+
+    /// <summary>Emitted when piece uses its ability.</summary>
     [Signal] public delegate void AbilityUsedEventHandler(AbilityId ability);
 
+    /// <summary>The type of chess piece (King, Queen, etc.).</summary>
     public PieceType PieceType { get; protected set; }
+
+    /// <summary>Which team this piece belongs to (Player or Enemy).</summary>
     public Team Team { get; set; }
+
+    /// <summary>Current position on the 8x8 board grid.</summary>
     public Vector2I BoardPosition { get; set; }
 
-    // Stats
+    /// <summary>Maximum hit points for this piece type.</summary>
     public int MaxHp { get; protected set; }
+
+    /// <summary>Current hit points. Piece is destroyed at 0.</summary>
     public int CurrentHp { get; protected set; }
+
+    /// <summary>Base damage dealt before dice roll modifier.</summary>
     public int BaseDamage { get; protected set; }
 
-    // Ability state
+    /// <summary>The unique ability this piece type has.</summary>
     public AbilityId AbilityId { get; protected set; }
-    public int AbilityCooldownMax { get; protected set; }
-    public int AbilityCooldownCurrent { get; set; } = 0;
-    public bool AbilityUsedThisMatch { get; set; } = false;  // For once-per-match abilities
 
-    // Combat state
-    public bool EnteredThreatZoneThisTurn { get; set; } = false;
-    public bool HasActedThisTurn { get; set; } = false;
+    /// <summary>Cooldown duration in turns (-1 = once per match).</summary>
+    public int AbilityCooldownMax { get; protected set; }
+
+    /// <summary>Remaining cooldown turns before ability is available.</summary>
+    public int AbilityCooldownCurrent { get; set; }
+
+    /// <summary>For once-per-match abilities: whether it has been used.</summary>
+    public bool AbilityUsedThisMatch { get; set; }
+
+    /// <summary>Whether this piece moved into a threat zone this turn (-1 dice penalty).</summary>
+    public bool EnteredThreatZoneThisTurn { get; set; }
+
+    /// <summary>Whether this piece has taken its action this turn.</summary>
+    public bool HasActedThisTurn { get; set; }
 
     // Visual components
     protected ColorRect? _visual;

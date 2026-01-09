@@ -46,12 +46,16 @@ public partial class CombatResolver : Node
             ? _gameState.EnemyKingThreatened
             : _gameState.PlayerKingThreatened;
 
+        // Boss Rule 1: Threat penalties are -2 during Room 1 Boss
+        int threatPenalty = (_gameState.IsBossMatch && _gameState.CurrentRoom == 1) ? -2 : -1;
+
         // Roll dice with all modifiers
         var diceResult = DiceRoller.RollCombat(
             baseModifier: 0,
             enteredThreatZone: attacker.EnteredThreatZoneThisTurn,
             royalDecreeActive: royalDecreeActive,
-            enemyKingWasThreatened: enemyKingThreatened
+            enemyKingWasThreatened: enemyKingThreatened,
+            threatPenalty: threatPenalty
         );
 
         // Calculate total damage: Base Damage + Dice Roll
@@ -60,13 +64,38 @@ public partial class CombatResolver : Node
         // Apply boss rules
         totalDamage = ApplyBossRules(totalDamage, attacker, defender, board);
 
-        // Apply damage
-        defender.TakeDamage(totalDamage);
+        // Check for Interpose (Rook ability) - split damage with adjacent Rook
+        var interposeRook = FindInterposeRook(defender, board);
+        if (interposeRook != null)
+        {
+            int defenderDamage = totalDamage / 2;
+            int rookDamage = totalDamage - defenderDamage; // Rook takes remainder
 
-        // Log combat
-        GD.Print($"[Combat] {attacker.PieceType} attacks {defender.PieceType}: " +
-                 $"Base {attacker.BaseDamage} + {diceResult.Breakdown} = {totalDamage} damage. " +
-                 $"Defender HP: {defender.CurrentHp}/{defender.MaxHp}");
+            defender.TakeDamage(defenderDamage);
+            interposeRook.TakeDamage(rookDamage);
+
+            GD.Print($"[Combat] INTERPOSE! {attacker.PieceType} attacks {defender.PieceType}: " +
+                     $"Base {attacker.BaseDamage} + {diceResult.Breakdown} = {totalDamage} total. " +
+                     $"Split: {defender.PieceType} takes {defenderDamage}, Rook takes {rookDamage}");
+            GD.Print($"[Combat] {defender.PieceType} HP: {defender.CurrentHp}/{defender.MaxHp}, " +
+                     $"Rook HP: {interposeRook.CurrentHp}/{interposeRook.MaxHp}");
+
+            // Check if Rook died from interpose
+            if (!interposeRook.IsAlive)
+            {
+                PieceDestroyed?.Invoke(interposeRook);
+                GD.Print($"[Combat] Rook destroyed from Interpose damage!");
+            }
+        }
+        else
+        {
+            // Normal damage application
+            defender.TakeDamage(totalDamage);
+
+            GD.Print($"[Combat] {attacker.PieceType} attacks {defender.PieceType}: " +
+                     $"Base {attacker.BaseDamage} + {diceResult.Breakdown} = {totalDamage} damage. " +
+                     $"Defender HP: {defender.CurrentHp}/{defender.MaxHp}");
+        }
 
         bool destroyed = !defender.IsAlive;
         if (destroyed)
@@ -79,6 +108,23 @@ public partial class CombatResolver : Node
         CombatResolved?.Invoke(result);
 
         return result;
+    }
+
+    /// <summary>
+    /// Finds an adjacent allied Rook with Interpose active
+    /// </summary>
+    private RookPiece? FindInterposeRook(BasePiece defender, GameBoard board)
+    {
+        foreach (var dir in Vector2IExtensions.AllDirections)
+        {
+            var pos = defender.BoardPosition + dir;
+            var piece = board.GetPieceAt(pos);
+            if (piece is RookPiece rook && rook.Team == defender.Team && rook.InterposeActive)
+            {
+                return rook;
+            }
+        }
+        return null;
     }
 
     private int ApplyBossRules(int damage, BasePiece attacker, BasePiece defender, GameBoard board)
