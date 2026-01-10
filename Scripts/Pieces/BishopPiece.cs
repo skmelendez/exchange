@@ -12,6 +12,8 @@ namespace Exchange.Pieces;
 /// </summary>
 public partial class BishopPiece : BasePiece
 {
+    private const int AttackRange = 3; // Limited snipe range for tactical play
+
     public BishopPiece(Team team) : base(PieceType.Bishop, team) { }
 
     public override List<Vector2I> GetValidMoves(GameBoard board)
@@ -38,19 +40,20 @@ public partial class BishopPiece : BasePiece
     {
         var positions = new List<Vector2I>();
 
-        // Bishop attacks diagonally but CANNOT attack adjacent tiles
+        // Bishop attacks diagonally but CANNOT attack adjacent tiles, limited range
         foreach (var dir in Vector2IExtensions.DiagonalDirections)
         {
             var current = BoardPosition + dir;
 
-            // Skip adjacent tile
+            // Skip adjacent tile (range 1)
             if (!current.IsOnBoard()) continue;
             if (board.IsOccupied(current))
                 continue; // Adjacent is blocked, can't shoot through
 
             current += dir; // Start from 2 tiles away
 
-            while (current.IsOnBoard())
+            // Continue checking up to AttackRange (starting from range 2)
+            for (int range = 2; range <= AttackRange && current.IsOnBoard(); range++)
             {
                 var piece = board.GetPieceAt(current);
                 if (piece != null)
@@ -70,7 +73,7 @@ public partial class BishopPiece : BasePiece
     {
         var positions = new List<Vector2I>();
 
-        // Bishop threatens diagonal tiles (except adjacent)
+        // Bishop threatens diagonal tiles (except adjacent), limited range
         foreach (var dir in Vector2IExtensions.DiagonalDirections)
         {
             var current = BoardPosition + dir;
@@ -81,7 +84,8 @@ public partial class BishopPiece : BasePiece
 
             current += dir; // Start threatening from 2 tiles away
 
-            while (current.IsOnBoard())
+            // Continue checking up to AttackRange (starting from range 2)
+            for (int range = 2; range <= AttackRange && current.IsOnBoard(); range++)
             {
                 if (adjacentBlocked)
                     break; // Line of sight blocked by adjacent piece

@@ -33,7 +33,49 @@ public class SimulatedBoardState
             state.AddPiece(SimulatedPiece.FromBasePiece(piece));
 
         state.RecalculateZobristHash();
+
+        // Debug: Verify simulation matches real board
+        VerifyBoardSync(state, board);
+
+        // Debug: Log King HP
+        var playerKing = state.GetKing(Team.Player);
+        var enemyKing = state.GetKing(Team.Enemy);
+        if (playerKing != null)
+            GameLogger.Debug("AI-Init", $"Player King initialized: HP={playerKing.CurrentHp}/{playerKing.MaxHp}");
+        if (enemyKing != null)
+            GameLogger.Debug("AI-Init", $"Enemy King initialized: HP={enemyKing.CurrentHp}/{enemyKing.MaxHp}");
+
         return state;
+    }
+
+    private static void VerifyBoardSync(SimulatedBoardState simState, GameBoard realBoard)
+    {
+        // Check each position on the real board against simulation
+        for (int x = 0; x < 8; x++)
+        {
+            for (int y = 0; y < 8; y++)
+            {
+                var pos = new Vector2I(x, y);
+                var realPiece = realBoard.GetPieceAt(pos);
+                var simPiece = simState.GetPieceAt(pos);
+
+                if (realPiece != null && simPiece == null)
+                {
+                    GameLogger.Error("AI-Sync", $"MISSING in simulation: {realPiece.PieceType} at {pos.ToChessNotation()}");
+                }
+                else if (realPiece == null && simPiece != null)
+                {
+                    GameLogger.Error("AI-Sync", $"GHOST in simulation: {simPiece.PieceType} at {pos.ToChessNotation()}");
+                }
+                else if (realPiece != null && simPiece != null)
+                {
+                    if (realPiece.PieceType != simPiece.PieceType || realPiece.Team != simPiece.Team)
+                    {
+                        GameLogger.Error("AI-Sync", $"MISMATCH at {pos.ToChessNotation()}: Real={realPiece.Team} {realPiece.PieceType}, Sim={simPiece.Team} {simPiece.PieceType}");
+                    }
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -104,11 +146,11 @@ public class SimulatedBoardState
         switch (move.MoveType)
         {
             case SimulatedMoveType.Move:
-                MakeRegularMove(move, undo);
+                MakeRegularMove(move, ref undo);
                 break;
 
             case SimulatedMoveType.Attack:
-                MakeAttackMove(move, undo);
+                MakeAttackMove(move, ref undo);
                 break;
 
             case SimulatedMoveType.MoveAndAttack:
@@ -123,7 +165,7 @@ public class SimulatedBoardState
         _undoStack.Push(undo);
     }
 
-    private void MakeRegularMove(SimulatedMove move, MoveUndo undo)
+    private void MakeRegularMove(SimulatedMove move, ref MoveUndo undo)
     {
         var piece = move.Piece;
 
@@ -139,14 +181,14 @@ public class SimulatedBoardState
         ZobristHash ^= ZobristKeys.GetPieceKey(piece.PieceType, piece.Team, move.ToPos);
     }
 
-    private void MakeAttackMove(SimulatedMove move, MoveUndo undo)
+    private void MakeAttackMove(SimulatedMove move, ref MoveUndo undo)
     {
         var target = GetPieceAt(move.ToPos);
         if (target != null)
         {
             undo.TargetPreviousHp = target.CurrentHp;
 
-            // Apply damage
+            // Apply damage (removed debug logging for performance)
             target.CurrentHp -= move.DamageDealt;
 
             // Update hash for HP change

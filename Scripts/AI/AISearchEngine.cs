@@ -1,4 +1,8 @@
 using Godot;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Collections.Concurrent;
 using Exchange.Core;
 using Exchange.Board;
 using Exchange.Pieces;
@@ -8,6 +12,7 @@ namespace Exchange.AI;
 /// <summary>
 /// High-performance minimax search engine with alpha-beta pruning and transposition tables.
 /// Supports up to 5-ply lookahead with incremental cache reuse between moves.
+/// Now with parallel root move evaluation for multi-core performance! 🚀
 /// </summary>
 public class AISearchEngine
 {
@@ -17,6 +22,26 @@ public class AISearchEngine
     private int _nodesSearched;
     private int _cacheHits;
     private int _cutoffs;
+
+    // Pondering state
+    private CancellationTokenSource? _ponderCts;
+    private Task<SearchResult>? _ponderTask;
+    private Vector2I? _ponderedPlayerMove;  // The player move we're pondering on
+
+    /// <summary>
+    /// Enable parallel evaluation of root moves across multiple CPU cores.
+    /// </summary>
+    public bool UseParallelSearch { get; set; } = true;
+
+    /// <summary>
+    /// Maximum degree of parallelism (0 = use all cores)
+    /// </summary>
+    public int MaxParallelism { get; set; } = 0;
+
+    /// <summary>
+    /// Enable pondering (thinking during opponent's turn)
+    /// </summary>
+    public bool UsePondering { get; set; } = true;
 
     /// <summary>
     /// Configuration for the search
@@ -40,11 +65,18 @@ public class AISearchEngine
         SearchResult? bestResult = null;
         for (int d = 1; d <= depth; d++)
         {
+            int nodesBefore = _nodesSearched;
             var result = SearchRoot(state, sideToMove, d);
+            int nodesThisDepth = _nodesSearched - nodesBefore;
+
             if (result.BestMove != null)
             {
                 bestResult = result;
-                GameLogger.Debug("AI", $"Depth {d}: {result.BestMove.Value.ToDebugString()} = {result.Score} ({_nodesSearched} nodes, {_cacheHits} cache hits, {_cutoffs} cutoffs)");
+                GameLogger.Debug("AI", $"Depth {d}: {result.BestMove.Value.ToDebugString()} = {result.Score} ({nodesThisDepth} nodes this depth, {_nodesSearched} total)");
+            }
+            else
+            {
+                GameLogger.Warning("AI", $"Depth {d}: No best move found! ({nodesThisDepth} nodes searched)");
             }
         }
 
@@ -62,6 +94,124 @@ public class AISearchEngine
         _transpositionTable.AgeEntries();
     }
 
+    #region Pondering
+
+    /// <summary>
+    /// Start pondering on the expected player response.
+    /// Call this after AI makes its move to think during player's turn.
+    /// </summary>
+    public void StartPondering(GameBoard board, Team aiTeam, int depth)
+    {
+        if (!UsePondering) return;
+
+        StopPondering(); // Cancel any existing ponder
+
+        _ponderCts = new CancellationTokenSource();
+        var token = _ponderCts.Token;
+
+        // Create snapshot for pondering
+        var state = SimulatedBoardState.FromGameBoard(board);
+        var playerTeam = aiTeam == Team.Enemy ? Team.Player : Team.Enemy;
+
+        // Find best player move to ponder on
+        var playerMoves = GenerateAllMoves(state, playerTeam);
+        if (playerMoves.Count == 0) return;
+
+        _moveOrderer.OrderMoves(playerMoves, state, _transpositionTable);
+        var expectedPlayerMove = playerMoves[0]; // Best move from player's perspective
+        _ponderedPlayerMove = expectedPlayerMove.ToPos;
+
+        GameLogger.Debug("AI-Ponder", $"Starting ponder on player move: {expectedPlayerMove.ToDebugString()}");
+
+        // Start background search assuming player makes this move
+        _ponderTask = Task.Run(() =>
+        {
+            try
+            {
+                // Make the expected player move
+                state.MakeMove(expectedPlayerMove);
+
+                // Now search for AI's response
+                _nodesSearched = 0;
+                _cacheHits = 0;
+                _cutoffs = 0;
+
+                var result = SearchRoot(state, aiTeam, depth);
+
+                if (!token.IsCancellationRequested)
+                {
+                    GameLogger.Debug("AI-Ponder", $"Ponder complete: {_nodesSearched} nodes, {_cacheHits} hits, best={result.Score}");
+                }
+
+                return result;
+            }
+            catch (OperationCanceledException)
+            {
+                return new SearchResult(null, 0, "Cancelled");
+            }
+        }, token);
+    }
+
+    /// <summary>
+    /// Stop any active pondering
+    /// </summary>
+    public void StopPondering()
+    {
+        if (_ponderCts != null)
+        {
+            _ponderCts.Cancel();
+            _ponderCts.Dispose();
+            _ponderCts = null;
+        }
+        _ponderTask = null;
+        _ponderedPlayerMove = null;
+    }
+
+    /// <summary>
+    /// Check if we have a pondered result ready for this player move
+    /// </summary>
+    public async Task<SearchResult?> GetPonderedResultAsync(Vector2I playerMoveTo)
+    {
+        if (_ponderTask == null || _ponderedPlayerMove == null)
+            return null;
+
+        // Check if player made the move we were pondering on
+        if (_ponderedPlayerMove.Value == playerMoveTo)
+        {
+            GameLogger.Debug("AI-Ponder", "Player made predicted move! Using pondered result.");
+            try
+            {
+                // Wait for ponder to complete (should be done or nearly done)
+                var result = await _ponderTask;
+                StopPondering();
+                return result;
+            }
+            catch
+            {
+                StopPondering();
+                return null;
+            }
+        }
+        else
+        {
+            GameLogger.Debug("AI-Ponder", $"Player made different move. Pondered: {_ponderedPlayerMove.Value.ToChessNotation()}, Actual: {playerMoveTo.ToChessNotation()}");
+            StopPondering();
+            return null; // Player made a different move, TT still helps though!
+        }
+    }
+
+    /// <summary>
+    /// Get TT statistics for debugging
+    /// </summary>
+    public (int used, int total, int hitRate) GetCacheStats()
+    {
+        var (used, total) = _transpositionTable.GetStats();
+        int hitRate = _nodesSearched > 0 ? (_cacheHits * 100) / _nodesSearched : 0;
+        return (used, total, hitRate);
+    }
+
+    #endregion
+
     /// <summary>
     /// Clear the transposition table (e.g., new game)
     /// </summary>
@@ -74,24 +224,45 @@ public class AISearchEngine
     {
         var moves = GenerateAllMoves(state, sideToMove);
         if (moves.Count == 0)
+        {
+            GameLogger.Warning("AI", $"SearchRoot depth {depth}: No moves generated for {sideToMove}! Pieces: {state.GetPieces(sideToMove).Count()}");
             return new SearchResult(null, sideToMove == Team.Enemy ? -99999 : 99999, "No moves");
+        }
+
+        // Debug: Log move counts
+        int attackMoves = moves.Count(m => m.MoveType == SimulatedMoveType.Attack);
+        int regularMoves = moves.Count(m => m.MoveType == SimulatedMoveType.Move);
+        int combos = moves.Count(m => m.MoveType == SimulatedMoveType.MoveAndAttack);
+        GameLogger.Debug("AI-Moves", $"Generated {moves.Count} moves for {sideToMove}: {attackMoves} attacks, {regularMoves} moves, {combos} combos");
 
         // Order moves for better pruning
         _moveOrderer.OrderMoves(moves, state, _transpositionTable);
 
+        // Use parallel search for depth >= 3 with enough moves to benefit
+        if (UseParallelSearch && depth >= 3 && moves.Count >= 4)
+        {
+            return SearchRootParallel(state, sideToMove, depth, moves);
+        }
+
+        // Sequential fallback for shallow depths or few moves
+        return SearchRootSequential(state, sideToMove, depth, moves);
+    }
+
+    /// <summary>
+    /// Sequential root search - used for shallow depths or few moves
+    /// </summary>
+    private SearchResult SearchRootSequential(SimulatedBoardState state, Team sideToMove, int depth, List<SimulatedMove> moves)
+    {
         SimulatedMove? bestMove = null;
-        int bestScore = int.MinValue;
-        int alpha = int.MinValue;
-        int beta = int.MaxValue;
+        int bestScore = -99999999;
+        int alpha = -99999999;
+        int beta = 99999999;
         string bestReason = "";
 
         foreach (var move in moves)
         {
             state.MakeMove(move);
-
-            // Negamax formulation: negate score and swap alpha/beta
             int score = -AlphaBeta(state, GetOpponent(sideToMove), depth - 1, -beta, -alpha);
-
             state.UndoMove(move);
 
             if (score > bestScore)
@@ -105,6 +276,161 @@ public class AISearchEngine
         }
 
         return new SearchResult(bestMove, bestScore, bestReason);
+    }
+
+    /// <summary>
+    /// Parallel root search - evaluates top-level moves across multiple CPU cores 🔥
+    /// Uses "Young Brothers Wait" concept: first move is searched sequentially for a good alpha,
+    /// then remaining moves are searched in parallel with that alpha bound.
+    /// </summary>
+    private SearchResult SearchRootParallel(SimulatedBoardState state, Team sideToMove, int depth, List<SimulatedMove> moves)
+    {
+        // First move searched sequentially to establish a good alpha bound
+        var firstMove = moves[0];
+        state.MakeMove(firstMove);
+        int firstScore = -AlphaBeta(state, GetOpponent(sideToMove), depth - 1, -99999999, 99999999);
+        state.UndoMove(firstMove);
+
+        var bestResult = new ConcurrentBag<(SimulatedMove Move, int Score)>
+        {
+            (firstMove, firstScore)
+        };
+
+        int sharedAlpha = firstScore;
+
+        // Remaining moves searched in parallel
+        var parallelMoves = moves.Skip(1).ToList();
+
+        int parallelism = MaxParallelism > 0 ? MaxParallelism : System.Environment.ProcessorCount;
+        var options = new ParallelOptions { MaxDegreeOfParallelism = parallelism };
+
+        // Each thread gets its own copy of the board state
+        Parallel.ForEach(parallelMoves, options, move =>
+        {
+            // Clone the state for this thread
+            var localState = state.Clone();
+
+            // Read current alpha (may be stale but that's OK for parallel search)
+            int localAlpha = Volatile.Read(ref sharedAlpha);
+
+            localState.MakeMove(move);
+
+            // Use aspiration window around current best
+            int score = -AlphaBetaThreadSafe(localState, GetOpponent(sideToMove), depth - 1, -99999999, -localAlpha);
+
+            localState.UndoMove(move);
+
+            // Track this result
+            bestResult.Add((move, score));
+
+            // Update shared alpha if we found better (atomic)
+            int current;
+            do
+            {
+                current = Volatile.Read(ref sharedAlpha);
+                if (score <= current) break;
+            } while (Interlocked.CompareExchange(ref sharedAlpha, score, current) != current);
+
+            Interlocked.Increment(ref _nodesSearched);
+        });
+
+        // Find best move from all results
+        var best = bestResult.OrderByDescending(r => r.Score).First();
+
+        GameLogger.Debug("AI", $"Parallel search: {parallelism} threads, {moves.Count} moves, best={best.Score}");
+
+        return new SearchResult(best.Move, best.Score, best.Move.Reason);
+    }
+
+    /// <summary>
+    /// Thread-safe version of AlphaBeta that uses shared transposition table.
+    /// TT access is inherently thread-safe for reads (may get stale data, acceptable).
+    /// Writes may race but worst case is slightly suboptimal replacement.
+    /// </summary>
+    private int AlphaBetaThreadSafe(SimulatedBoardState state, Team sideToMove, int depth, int alpha, int beta)
+    {
+        Interlocked.Increment(ref _nodesSearched);
+
+        // Check transposition table (thread-safe read)
+        ulong hash = state.ZobristHash;
+        if (_transpositionTable.TryGet(hash, depth, alpha, beta, out int ttScore))
+        {
+            Interlocked.Increment(ref _cacheHits);
+            return ttScore;
+        }
+
+        // Terminal conditions
+        if (depth == 0)
+        {
+            int eval = Evaluate(state, sideToMove);
+            _transpositionTable.Store(hash, depth, eval, TranspositionTable.NodeType.Exact, null);
+            return eval;
+        }
+
+        // Check for king death
+        if (!state.HasKing(Team.Player))
+            return sideToMove == Team.Enemy ? 50000 + depth : -50000 - depth;
+        if (!state.HasKing(Team.Enemy))
+            return sideToMove == Team.Player ? 50000 + depth : -50000 - depth;
+
+        var moves = GenerateAllMoves(state, sideToMove);
+        if (moves.Count == 0)
+        {
+            return -10000 + depth;
+        }
+
+        // Use TT for move ordering (best move from previous search first)
+        _moveOrderer.OrderMoves(moves, state, _transpositionTable);
+
+        int originalAlpha = alpha;
+        SimulatedMove? bestMove = null;
+        int moveIndex = 0;
+
+        foreach (var move in moves)
+        {
+            state.MakeMove(move);
+
+            int score;
+            bool isCapture = move.MoveType == SimulatedMoveType.Attack || move.MoveType == SimulatedMoveType.MoveAndAttack;
+
+            // Late Move Reductions for quiet moves
+            if (moveIndex >= 4 && depth >= 3 && !isCapture)
+            {
+                score = -AlphaBetaThreadSafe(state, GetOpponent(sideToMove), depth - 2, -beta, -alpha);
+                if (score > alpha)
+                {
+                    score = -AlphaBetaThreadSafe(state, GetOpponent(sideToMove), depth - 1, -beta, -alpha);
+                }
+            }
+            else
+            {
+                score = -AlphaBetaThreadSafe(state, GetOpponent(sideToMove), depth - 1, -beta, -alpha);
+            }
+
+            state.UndoMove(move);
+            moveIndex++;
+
+            if (score >= beta)
+            {
+                Interlocked.Increment(ref _cutoffs);
+                _transpositionTable.Store(hash, depth, beta, TranspositionTable.NodeType.LowerBound, move);
+                return beta;
+            }
+
+            if (score > alpha)
+            {
+                alpha = score;
+                bestMove = move;
+            }
+        }
+
+        // Store in transposition table
+        var nodeType = alpha > originalAlpha
+            ? TranspositionTable.NodeType.Exact
+            : TranspositionTable.NodeType.UpperBound;
+        _transpositionTable.Store(hash, depth, alpha, nodeType, bestMove);
+
+        return alpha;
     }
 
     private int AlphaBeta(SimulatedBoardState state, Team sideToMove, int depth, int alpha, int beta)
@@ -127,7 +453,7 @@ public class AISearchEngine
             return eval;
         }
 
-        // Check for king capture (game over)
+        // Check for king death (HP-based: only game over if king is actually DEAD)
         if (!state.HasKing(Team.Player))
             return sideToMove == Team.Enemy ? 50000 + depth : -50000 - depth;
         if (!state.HasKing(Team.Enemy))
@@ -144,12 +470,36 @@ public class AISearchEngine
 
         int originalAlpha = alpha;
         SimulatedMove? bestMove = null;
+        int moveIndex = 0;
 
         foreach (var move in moves)
         {
             state.MakeMove(move);
-            int score = -AlphaBeta(state, GetOpponent(sideToMove), depth - 1, -beta, -alpha);
+
+            int score;
+            bool isCapture = move.MoveType == SimulatedMoveType.Attack || move.MoveType == SimulatedMoveType.MoveAndAttack;
+
+            // Late Move Reductions (LMR): Search later quiet moves at reduced depth
+            // This dramatically speeds up search by quickly pruning unpromising moves
+            if (moveIndex >= 4 && depth >= 3 && !isCapture)
+            {
+                // Search at reduced depth first
+                score = -AlphaBeta(state, GetOpponent(sideToMove), depth - 2, -beta, -alpha);
+
+                // If it looks promising, re-search at full depth
+                if (score > alpha)
+                {
+                    score = -AlphaBeta(state, GetOpponent(sideToMove), depth - 1, -beta, -alpha);
+                }
+            }
+            else
+            {
+                // Full depth search for important moves
+                score = -AlphaBeta(state, GetOpponent(sideToMove), depth - 1, -beta, -alpha);
+            }
+
             state.UndoMove(move);
+            moveIndex++;
 
             if (score >= beta)
             {
@@ -228,19 +578,8 @@ public class AISearchEngine
                 int expectedDamage = knight.BaseDamage + 4; // base + avg dice
                 bool willKill = target.CurrentHp <= expectedDamage;
 
-                string reason;
-                if (willKill)
-                {
-                    if (target.PieceType == PieceType.King)
-                        reason = $"Knight CHECKMATE: Move to {movePos.ToChessNotation()}, kill King!";
-                    else
-                        reason = $"Knight: Move to {movePos.ToChessNotation()}, kill {target.PieceType}";
-                }
-                else
-                {
-                    int hpAfter = target.CurrentHp - expectedDamage;
-                    reason = $"Knight: Move to {movePos.ToChessNotation()}, attack {target.PieceType} ({expectedDamage} dmg, {hpAfter} HP left)";
-                }
+                // Simple reason to avoid string allocations
+                string reason = willKill ? "KnightKill" : "KnightAttack";
 
                 combos.Add(new SimulatedMove
                 {
@@ -273,24 +612,9 @@ public class AISearchEngine
             int expectedDamage = piece.BaseDamage + 4;
             bool willKill = target.CurrentHp <= expectedDamage;
 
-            // Check if attacker is under counter-attack threat
-            bool attackerThreatened = IsSquareAttacked(state, piece.Position, GetOpponent(piece.Team));
-
-            string reason;
-            if (willKill)
-            {
-                if (target.PieceType == PieceType.King)
-                    reason = "CHECKMATE: Kill King!";
-                else if (attackerThreatened)
-                    reason = $"Trade: Kill {target.PieceType} (we're threatened)";
-                else
-                    reason = $"Kill {target.PieceType}";
-            }
-            else
-            {
-                int targetHpAfter = target.CurrentHp - expectedDamage;
-                reason = $"Attack {target.PieceType} ({expectedDamage} dmg, {targetHpAfter} HP left)";
-            }
+            // Use simple reason strings to avoid allocations in hot path
+            // Full reason is only needed for the final chosen move
+            string reason = willKill ? "Kill" : "Attack";
 
             moves.Add(new SimulatedMove
             {
@@ -349,7 +673,7 @@ public class AISearchEngine
         {
             PieceType.King => GetKingAttacks(state, piece),      // Adjacent (8 dirs)
             PieceType.Queen => GetQueenAttacks(state, piece),    // All 8 dirs, blocked
-            PieceType.Rook => GetRookAttacks(state, piece),      // Adjacent + Cardinal range 3
+            PieceType.Rook => GetRookAttacks(state, piece),      // Adjacent + Cardinal range 2
             PieceType.Bishop => GetBishopAttacks(state, piece),  // Diagonal, NO adjacent, blocked
             PieceType.Knight => GetKnightAttacks(state, piece),  // Adjacent only!
             PieceType.Pawn => GetPawnAttacks(state, piece),      // Forward diagonal only
@@ -382,8 +706,8 @@ public class AISearchEngine
         return attacks;
     }
 
-    // === QUEEN: All 8 directions, range 1-7, blocked ===
-    private const int QueenAttackRange = 7;
+    // === QUEEN: All 8 directions, range 1-4, blocked ===
+    private const int QueenAttackRange = 3;
 
     private List<Vector2I> GetQueenAttacks(SimulatedBoardState state, SimulatedPiece piece)
     {
@@ -406,8 +730,8 @@ public class AISearchEngine
         return attacks;
     }
 
-    // === ROOK: All 8 directions range 1 + Cardinal range 1-3, blocked ===
-    private const int RookCardinalRange = 3;
+    // === ROOK: All 8 directions range 1 + Cardinal range 1-2, blocked ===
+    private const int RookCardinalRange = 2;
 
     private List<Vector2I> GetRookAttacks(SimulatedBoardState state, SimulatedPiece piece)
     {
@@ -443,7 +767,7 @@ public class AISearchEngine
 
     // === BISHOP: Diagonal only, range 2-4 (NOT adjacent), blocked ===
     private const int BishopMinRange = 2;
-    private const int BishopMaxRange = 4;
+    private const int BishopMaxRange = 3;
 
     private List<Vector2I> GetBishopAttacks(SimulatedBoardState state, SimulatedPiece piece)
     {
@@ -614,31 +938,86 @@ public class AISearchEngine
         int score = 0;
         var opponent = GetOpponent(sideToMove);
 
-        // Cache attacks for both sides (expensive to compute multiple times)
-        var myAttackedSquares = GetAllAttackedSquares(state, sideToMove);
-        var oppAttackedSquares = GetAllAttackedSquares(state, opponent);
+        // IMPORTANT: Two different "attack" concepts:
+        // 1. CaptureSquares = where we can ACTUALLY capture a piece RIGHT NOW
+        // 2. ThreatZones = all squares we control/threaten (for safety evaluation)
+        var myCaptureSquares = GetActualCaptureSquares(state, sideToMove);
+        var oppCaptureSquares = GetActualCaptureSquares(state, opponent);
+        var myThreatZones = GetAllThreatZones(state, sideToMove);
+        var oppThreatZones = GetAllThreatZones(state, opponent);
+
+        // === AGGRESSION BONUS ===
+        // In HP-based combat, having attack opportunities is inherently valuable!
+        // Reward positions where we can deal damage.
+        int attackOpportunities = myCaptureSquares.Count;
+        int oppAttackOpportunities = oppCaptureSquares.Count;
+        score += (attackOpportunities - oppAttackOpportunities) * 25;  // Each attack option is worth ~25
+
+        // Bonus for attacking LOW HP targets (potential kills!)
+        foreach (var piece in state.GetPieces(opponent))
+        {
+            if (myCaptureSquares.Contains(piece.Position))
+            {
+                // Estimate damage we can deal (base damage + avg dice = ~6-8)
+                int potentialDamage = 7;
+                if (piece.CurrentHp <= potentialDamage)
+                {
+                    // Can likely kill this piece! Big bonus based on piece value
+                    score += PieceValues[piece.PieceType] / 2;
+                }
+                else if (piece.CurrentHp <= potentialDamage * 2)
+                {
+                    // Piece is wounded - good target
+                    score += 30;
+                }
+            }
+        }
 
         // === MATERIAL + HP EVALUATION (only ALIVE pieces!) ===
+        const int HpWeight = 20;
+
         foreach (var piece in state.GetPieces(sideToMove))
         {
+            // Skip Kings here - they have their own evaluation section
+            if (piece.PieceType == PieceType.King) continue;
+
             int pieceValue = PieceValues[piece.PieceType];
-            int hpBonus = piece.CurrentHp * 3; // HP matters more in this game
+            int hpBonus = piece.CurrentHp * HpWeight;
             int total = pieceValue + hpBonus;
 
-            // HANGING PIECE PENALTY: If this piece can be attacked and isn't defended
-            if (oppAttackedSquares.Contains(piece.Position))
+            // HANGING PIECE PENALTY: Only if opponent can ACTUALLY capture this piece
+            if (oppCaptureSquares.Contains(piece.Position))
             {
-                bool isDefended = myAttackedSquares.Contains(piece.Position);
+                bool isDefended = myThreatZones.Contains(piece.Position);
                 if (!isDefended)
                 {
-                    // Hanging! Huge penalty - we could lose this piece
-                    total -= pieceValue / 2;
+                    // Truly hanging! Apply significant penalty
+                    // But not 2x piece value - that was too extreme
+                    total -= pieceValue + (piece.CurrentHp * HpWeight / 2);
                 }
                 else
                 {
-                    // Under attack but defended - still risky, small penalty
-                    total -= pieceValue / 6;
+                    // Under attack but defended - evaluate trade
+                    // Find who's attacking us and compare values
+                    var attackers = GetAttackersOfSquare(state, piece.Position, opponent);
+                    if (attackers.Count > 0)
+                    {
+                        var cheapestAttacker = attackers.OrderBy(a => PieceValues[a.PieceType]).First();
+                        int attackerValue = PieceValues[cheapestAttacker.PieceType];
+
+                        // Bad trade if we lose more value
+                        if (pieceValue > attackerValue)
+                            total -= (pieceValue - attackerValue) / 2;
+                        // Penalty reduced for equal/good trades
+                        else
+                            total -= pieceValue / 6;
+                    }
                 }
+            }
+            // Piece in THREAT ZONE but not immediately capturable - small caution penalty
+            else if (oppThreatZones.Contains(piece.Position))
+            {
+                total -= 15; // Minor penalty for being in enemy's sphere of influence
             }
 
             score += total;
@@ -646,59 +1025,175 @@ public class AISearchEngine
 
         foreach (var piece in state.GetPieces(opponent))
         {
+            // Skip Kings here - they have their own evaluation section
+            if (piece.PieceType == PieceType.King) continue;
+
             int pieceValue = PieceValues[piece.PieceType];
-            int hpBonus = piece.CurrentHp * 3;
+            int hpBonus = piece.CurrentHp * HpWeight;
             int total = pieceValue + hpBonus;
 
-            // OPPORTUNITY: Enemy piece is attackable by us
-            if (myAttackedSquares.Contains(piece.Position))
+            // OPPORTUNITY: Enemy piece is ACTUALLY capturable by us
+            if (myCaptureSquares.Contains(piece.Position))
             {
-                bool isDefended = oppAttackedSquares.Contains(piece.Position);
+                bool isDefended = oppThreatZones.Contains(piece.Position);
                 if (!isDefended)
                 {
-                    // Hanging enemy piece! We can take it for free
-                    total -= pieceValue / 2;
+                    // Hanging enemy piece! Big opportunity
+                    total -= pieceValue + (piece.CurrentHp * HpWeight / 2);
                 }
                 else
                 {
-                    // Attackable but defended - potential trade
-                    total -= pieceValue / 8;
+                    // Attackable but defended - evaluate trade potential
+                    var ourAttackers = GetAttackersOfSquare(state, piece.Position, sideToMove);
+                    if (ourAttackers.Count > 0)
+                    {
+                        var cheapestAttacker = ourAttackers.OrderBy(a => PieceValues[a.PieceType]).First();
+                        int attackerValue = PieceValues[cheapestAttacker.PieceType];
+
+                        // Good trade if we win material
+                        if (pieceValue > attackerValue)
+                            total -= (pieceValue - attackerValue) / 3;
+                    }
                 }
             }
 
             score -= total;
         }
 
-        // === KING SAFETY (Critical!) ===
+        // === HP-BASED KING EVALUATION (NOT checkmate-style!) ===
+        // This game is about DAMAGE over time, not instant checkmate
+        // Key considerations:
+        // 1. How much damage can be dealt to king this turn?
+        // 2. Can attackers be killed BEFORE they deal damage?
+        // 3. Is a suicide attack worth the damage dealt?
+        // 4. King HP remaining matters proportionally
+
         var myKing = state.GetKing(sideToMove);
         var oppKing = state.GetKing(opponent);
 
         if (myKing != null)
         {
-            if (oppAttackedSquares.Contains(myKing.Position))
-            {
-                // Our king is in check - very bad!
-                score -= 500;
+            // === OUR KING'S SAFETY ===
+            int kingHpPercent = (myKing.CurrentHp * 100) / 25; // 25 is max HP
 
-                // Even worse if we have few escape squares
-                var kingMoves = GetKingMoves(state, myKing);
-                int safeSquares = kingMoves.Count(m => !oppAttackedSquares.Contains(m));
-                if (safeSquares == 0)
-                    score -= 2000; // Potential checkmate!
+            // Low HP is dangerous but not game over
+            if (kingHpPercent < 40)
+                score -= (40 - kingHpPercent) * 10; // Penalty scales with low HP
+
+            // Check if king is under attack
+            var kingAttackers = GetAttackersOfSquare(state, myKing.Position, opponent);
+            if (kingAttackers.Count > 0)
+            {
+                // Calculate total potential damage from attackers
+                int totalPotentialDamage = 0;
+                int attackersThatCanBeKilled = 0;
+
+                foreach (var attacker in kingAttackers)
+                {
+                    int expectedDmg = attacker.BaseDamage + 4; // base + avg dice
+                    totalPotentialDamage += expectedDmg;
+
+                    // Can we kill this attacker before they attack?
+                    if (myCaptureSquares.Contains(attacker.Position))
+                    {
+                        // We can counter-attack!
+                        var defender = GetLowestValueAttacker(state, attacker.Position, sideToMove);
+                        if (defender != null)
+                        {
+                            int defenderDmg = defender.BaseDamage + 4;
+                            if (attacker.CurrentHp <= defenderDmg)
+                            {
+                                attackersThatCanBeKilled++;
+                                totalPotentialDamage -= expectedDmg; // Won't deal damage if killed
+                            }
+                        }
+                    }
+                }
+
+                // Penalty based on net damage we can't prevent
+                if (totalPotentialDamage > 0)
+                {
+                    // Would this kill our king?
+                    if (myKing.CurrentHp <= totalPotentialDamage)
+                        score -= 8000; // Very dangerous! But not instant game over
+                    else
+                        score -= totalPotentialDamage * 40; // Proportional to damage
+                }
+
+                // Small penalty for being under attack at all
+                score -= (kingAttackers.Count - attackersThatCanBeKilled) * 50;
             }
+
+            // Bonus for escape routes (can move to safety)
+            var kingMoves = GetKingMoves(state, myKing);
+            int safeSquares = kingMoves.Count(m => !oppThreatZones.Contains(m));
+            score += safeSquares * 15;
         }
 
         if (oppKing != null)
         {
-            if (myAttackedSquares.Contains(oppKing.Position))
-            {
-                // Enemy king in check - good!
-                score += 400;
+            // === ENEMY KING EVALUATION ===
+            int oppKingHpPercent = (oppKing.CurrentHp * 100) / 25;
 
-                var kingMoves = GetKingMoves(state, oppKing);
-                int safeSquares = kingMoves.Count(m => !myAttackedSquares.Contains(m));
-                if (safeSquares == 0)
-                    score += 1500; // Potential checkmate!
+            // Low HP enemy king is an opportunity
+            if (oppKingHpPercent < 40)
+                score += (40 - oppKingHpPercent) * 10;
+
+            // Check if we can attack enemy king
+            var ourKingAttackers = GetAttackersOfSquare(state, oppKing.Position, sideToMove);
+            if (ourKingAttackers.Count > 0)
+            {
+                int totalDamageWeCanDeal = 0;
+                int attackersThatWillDie = 0;
+
+                foreach (var attacker in ourKingAttackers)
+                {
+                    int expectedDmg = attacker.BaseDamage + 4;
+                    totalDamageWeCanDeal += expectedDmg;
+
+                    // Will our attacker be killed after?
+                    if (oppThreatZones.Contains(attacker.Position))
+                    {
+                        var defender = GetLowestValueAttacker(state, attacker.Position, opponent);
+                        if (defender != null)
+                        {
+                            int defenderDmg = defender.BaseDamage + 4;
+                            if (attacker.CurrentHp <= defenderDmg)
+                                attackersThatWillDie++;
+                        }
+                    }
+                }
+
+                // === SACRIFICE EVALUATION ===
+                // Is the damage worth the piece(s) we'll lose?
+                int valueOfAttackersThatWillDie = 0;
+                if (attackersThatWillDie > 0)
+                {
+                    foreach (var attacker in ourKingAttackers)
+                    {
+                        if (oppThreatZones.Contains(attacker.Position))
+                            valueOfAttackersThatWillDie += PieceValues[attacker.PieceType];
+                    }
+                }
+
+                // Would this kill enemy king?
+                if (oppKing.CurrentHp <= totalDamageWeCanDeal)
+                {
+                    // Can kill the king! Huge bonus, minus piece sacrifice cost
+                    score += 10000 - valueOfAttackersThatWillDie;
+                }
+                else
+                {
+                    // Dealing damage - is it worth the sacrifice?
+                    int damageValue = totalDamageWeCanDeal * 50; // Each HP damage to king is valuable
+                    int netGain = damageValue - (valueOfAttackersThatWillDie / 2); // Sacrifices are costly
+
+                    // Only attack king if it's net positive or we're getting good damage
+                    if (netGain > 0)
+                        score += netGain;
+                    else if (totalDamageWeCanDeal >= 5)
+                        score += totalDamageWeCanDeal * 20; // Still valuable if significant damage
+                }
             }
         }
 
@@ -708,17 +1203,111 @@ public class AISearchEngine
         score += (myMobility - oppMobility) * 8;
 
         // === CENTER CONTROL ===
-        score += EvaluateCenterControl(state, sideToMove, myAttackedSquares, oppAttackedSquares);
+        score += EvaluateCenterControl(state, sideToMove, myThreatZones, oppThreatZones);
 
         // === PIECE ACTIVITY ===
-        score += EvaluatePieceActivity(state, sideToMove, myAttackedSquares);
-        score -= EvaluatePieceActivity(state, opponent, oppAttackedSquares);
+        score += EvaluatePieceActivity(state, sideToMove, myThreatZones);
+        score -= EvaluatePieceActivity(state, opponent, oppThreatZones);
+
+        // === PAWN STRUCTURE ===
+        // Pawns are valuable as shields in this HP-based game
+        score += EvaluatePawnStructure(state, sideToMove, myKing);
+        score -= EvaluatePawnStructure(state, opponent, oppKing);
 
         return score;
     }
 
     /// <summary>
-    /// Get all squares attacked by a team (cached for efficiency)
+    /// Evaluate pawn structure - walls protect pieces, connected pawns support each other
+    /// </summary>
+    private int EvaluatePawnStructure(SimulatedBoardState state, Team team, SimulatedPiece? king)
+    {
+        int score = 0;
+        var pawns = state.GetPieces(team).Where(p => p.PieceType == PieceType.Pawn).ToList();
+
+        foreach (var pawn in pawns)
+        {
+            // Connected pawns (adjacent pawns support each other)
+            int connectedBonus = 0;
+            foreach (var dir in Vector2IExtensions.AllDirections)
+            {
+                var adjacentPos = pawn.Position + dir;
+                var adjacent = state.GetPieceAt(adjacentPos);
+                if (adjacent != null && adjacent.Team == team && adjacent.PieceType == PieceType.Pawn)
+                {
+                    connectedBonus += 15; // Each adjacent friendly pawn adds support
+                }
+            }
+            score += connectedBonus;
+
+            // Pawn shields in front of valuable pieces (especially King)
+            if (king != null)
+            {
+                int forwardDir = team == Team.Player ? 1 : -1;
+                var kingFront = king.Position + new Vector2I(0, forwardDir);
+                var kingFrontLeft = king.Position + new Vector2I(-1, forwardDir);
+                var kingFrontRight = king.Position + new Vector2I(1, forwardDir);
+
+                if (pawn.Position == kingFront || pawn.Position == kingFrontLeft || pawn.Position == kingFrontRight)
+                {
+                    score += 40; // Pawn shielding king is very valuable
+                }
+            }
+
+            // Advanced pawns are more threatening
+            int advanceRank = team == Team.Player ? pawn.Position.Y : (7 - pawn.Position.Y);
+            if (advanceRank >= 4) // Past the midpoint
+            {
+                score += (advanceRank - 3) * 20; // Bonus for advanced pawns
+            }
+
+            // Isolated pawn penalty (no friendly pawns on adjacent files)
+            bool hasFileNeighbor = pawns.Any(p =>
+                p != pawn &&
+                Math.Abs(p.Position.X - pawn.Position.X) == 1);
+            if (!hasFileNeighbor)
+            {
+                score -= 10; // Isolated pawn is weaker
+            }
+        }
+
+        return score;
+    }
+
+    /// <summary>
+    /// Get squares where pieces can ACTUALLY be captured right now.
+    /// Only includes positions where an enemy piece exists and can be attacked.
+    /// </summary>
+    private HashSet<Vector2I> GetActualCaptureSquares(SimulatedBoardState state, Team team)
+    {
+        var captures = new HashSet<Vector2I>();
+        foreach (var piece in state.GetPieces(team))
+        {
+            var attacks = GetAttackablePositions(state, piece);
+            foreach (var pos in attacks)
+                captures.Add(pos);
+        }
+        return captures;
+    }
+
+    /// <summary>
+    /// Get all squares a team threatens (controls), including empty squares.
+    /// Used for evaluating piece safety and board control.
+    /// </summary>
+    private HashSet<Vector2I> GetAllThreatZones(SimulatedBoardState state, Team team)
+    {
+        var zones = new HashSet<Vector2I>();
+        foreach (var piece in state.GetPieces(team))
+        {
+            var threats = GetThreatenedSquares(state, piece);
+            foreach (var pos in threats)
+                zones.Add(pos);
+        }
+        return zones;
+    }
+
+    /// <summary>
+    /// Legacy function - combines both (for backwards compatibility in king safety, etc.)
     /// </summary>
     private HashSet<Vector2I> GetAllAttackedSquares(SimulatedBoardState state, Team team)
     {
@@ -729,7 +1318,6 @@ public class AISearchEngine
             foreach (var pos in attacks)
                 attacked.Add(pos);
 
-            // Also include threatened squares (where piece COULD attack if enemy was there)
             var threats = GetThreatenedSquares(state, piece);
             foreach (var pos in threats)
                 attacked.Add(pos);
@@ -942,6 +1530,30 @@ public class AISearchEngine
                 return true;
         }
         return false;
+    }
+
+    /// <summary>
+    /// Get all pieces that can attack a specific square.
+    /// Used for HP-based damage calculation and sacrifice evaluation.
+    /// </summary>
+    private List<SimulatedPiece> GetAttackersOfSquare(SimulatedBoardState state, Vector2I square, Team byTeam)
+    {
+        var attackers = new List<SimulatedPiece>();
+        foreach (var piece in state.GetPieces(byTeam))
+        {
+            var attacks = GetAttackablePositions(state, piece);
+            if (attacks.Contains(square))
+                attackers.Add(piece);
+
+            // Also check Knight move+attack combos (Knight attacks AFTER moving)
+            if (piece.PieceType == PieceType.Knight)
+            {
+                var combos = GetKnightMoveAttackCombos(state, piece);
+                if (combos.Any(c => c.AttackPos == square))
+                    attackers.Add(piece);
+            }
+        }
+        return attackers;
     }
 
     /// <summary>

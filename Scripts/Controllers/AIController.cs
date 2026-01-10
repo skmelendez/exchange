@@ -1,4 +1,5 @@
 using Godot;
+using System.Threading.Tasks;
 using Exchange.Core;
 using Exchange.Board;
 using Exchange.Pieces;
@@ -52,27 +53,63 @@ public partial class AIController : Node
         { PieceType.Pawn, 100 }
     };
 
+    private Vector2I? _lastPlayerMoveTo;  // Track player's last move for pondering
+
     public void Initialize(GameBoard board, GameState gameState, TurnController turnController)
     {
         _board = board;
         _gameState = gameState;
         _turnController = turnController;
+
+        // Subscribe to player moves for pondering
+        turnController.PieceMoved += OnPieceMoved;
+    }
+
+    /// <summary>
+    /// Called when any piece moves - track player moves for pondering
+    /// </summary>
+    private void OnPieceMoved(BasePiece piece, Vector2I from, Vector2I to)
+    {
+        if (piece.Team == Team.Player)
+        {
+            _lastPlayerMoveTo = to;
+        }
     }
 
     public async void ExecuteTurn()
     {
         GameLogger.Debug("AI", $"=== ExecuteTurn START === (Depth: {LookaheadDepth}, Heuristic: {UseHeuristicFallback})");
-        await ToSignal(GetTree().CreateTimer(0.2f), SceneTreeTimer.SignalName.Timeout);
+
+        // Wait for ALL animations to complete before thinking
+        await WaitForAllAnimationsAsync();
+
+        // Small delay for visual pacing
+        await ToSignal(GetTree().CreateTimer(0.1f), SceneTreeTimer.SignalName.Timeout);
 
         AIDecision? decision = null;
 
         // Use true minimax search for depth >= 2 (unless heuristic fallback is forced)
         if (LookaheadDepth >= 2 && !UseHeuristicFallback)
         {
-            decision = FindBestActionWithMinimax();
+            // First check if we have a pondered result ready 🧠
+            if (_lastPlayerMoveTo.HasValue)
+            {
+                var ponderedResult = await _searchEngine.GetPonderedResultAsync(_lastPlayerMoveTo.Value);
+                if (ponderedResult != null && ponderedResult.BestMove != null)
+                {
+                    GameLogger.Debug("AI", "Using pondered result - instant response!");
+                    decision = ConvertSearchResultToDecision(ponderedResult);
+                }
+            }
+
+            // If no pondered result, do a fresh search
+            if (decision == null)
+            {
+                decision = await FindBestActionWithMinimaxAsync();
+            }
         }
 
-        // Fallback to heuristic evaluation
+        // Fallback to heuristic evaluation (still blocking for simplicity)
         if (decision == null)
         {
             GameLogger.Debug("AI", "Using heuristic fallback...");
@@ -89,12 +126,39 @@ public partial class AIController : Node
                  $"{(decision.Target.HasValue ? $"-> {decision.Target.Value.ToChessNotation()}" : "")} " +
                  $"(score: {decision.Score}, {decision.Reason})");
 
-        ExecuteDecision(decision);
+        await ExecuteDecisionAsync(decision);
 
         // Age transposition table entries for cache reuse
         _searchEngine.OnMoveMade();
 
+        // Start pondering for next turn 🔮
+        _searchEngine.StartPondering(_board, Team.Enemy, LookaheadDepth);
+
         GameLogger.Debug("AI", "=== ExecuteTurn END ===");
+        _lastPlayerMoveTo = null; // Reset for next turn
+    }
+
+    /// <summary>
+    /// Wait for all visual animations to complete (movement + attack effects)
+    /// </summary>
+    private async Task WaitForAllAnimationsAsync()
+    {
+        // Wait for attack animation
+        if (_board.IsAttackAnimating)
+        {
+            GameLogger.Debug("AI", "Waiting for attack animation...");
+            await ToSignal(_board, GameBoard.SignalName.AttackAnimationComplete);
+        }
+
+        // Wait for movement animation
+        if (_board.IsAnimating)
+        {
+            GameLogger.Debug("AI", "Waiting for move animation...");
+            await ToSignal(_board, GameBoard.SignalName.PieceMoveAnimationComplete);
+        }
+
+        // Extra small delay to ensure damage numbers have faded
+        await ToSignal(GetTree().CreateTimer(0.1f), SceneTreeTimer.SignalName.Timeout);
     }
 
     /// <summary>
@@ -108,12 +172,44 @@ public partial class AIController : Node
 
     #region Minimax Search
 
+    /// <summary>
+    /// Runs minimax search on a background thread to avoid blocking the UI.
+    /// Uses Task.Run() to offload computation to worker thread. 🧵
+    /// </summary>
+    private async Task<AIDecision?> FindBestActionWithMinimaxAsync()
+    {
+        GameLogger.Debug("AI", $"Starting {LookaheadDepth}-ply ASYNC minimax search...");
+
+        // Log board state for debugging (on main thread)
+        LogBoardState();
+
+        // Capture search parameters
+        int depth = LookaheadDepth;
+
+        // Run the search on a background thread
+        var result = await Task.Run(() => _searchEngine.FindBestMove(_board, Team.Enemy, depth));
+
+        // Back on main thread - convert result to decision
+        return ConvertSearchResultToDecision(result);
+    }
+
     private AIDecision? FindBestActionWithMinimax()
     {
         GameLogger.Debug("AI", $"Starting {LookaheadDepth}-ply minimax search...");
 
+        // Log board state for debugging
+        LogBoardState();
+
         var result = _searchEngine.FindBestMove(_board, Team.Enemy, LookaheadDepth);
 
+        return ConvertSearchResultToDecision(result);
+    }
+
+    /// <summary>
+    /// Convert search result to AIDecision by mapping simulated pieces to real pieces
+    /// </summary>
+    private AIDecision? ConvertSearchResultToDecision(AI.SearchResult result)
+    {
         if (result.BestMove == null)
         {
             GameLogger.Warning("AI", "Minimax search found no moves");
@@ -123,22 +219,68 @@ public partial class AIController : Node
         var move = result.BestMove.Value;
 
         // Convert SimulatedMove back to AIDecision with actual piece reference
-        var piece = FindActualPiece(move.Piece);
+        // IMPORTANT: Use FromPos to find the piece, not the simulated piece's current position
+        var piece = FindActualPieceAtPosition(move.FromPos, move.Piece.PieceType, move.Piece.Team);
         if (piece == null)
         {
-            GameLogger.Error("AI", "Could not find piece for simulated move");
+            GameLogger.Error("AI", $"Could not find {move.Piece.PieceType} at {move.FromPos.ToChessNotation()} for simulated move");
             return null;
         }
 
         var action = move.MoveType switch
         {
-            SimulatedMoveType.Attack => ActionType.Attack,
-            SimulatedMoveType.Move => ActionType.Move,
-            SimulatedMoveType.Ability => ActionType.Ability,
+            AI.SimulatedMoveType.Attack => ActionType.Attack,
+            AI.SimulatedMoveType.Move => ActionType.Move,
+            AI.SimulatedMoveType.MoveAndAttack => ActionType.MoveAndAttack,
+            AI.SimulatedMoveType.Ability => ActionType.Ability,
             _ => ActionType.Move
         };
 
-        return new AIDecision(piece, action, move.ToPos, result.Score, result.Reason);
+        // VALIDATE: Check if the move is actually legal on the real board
+        if (action == ActionType.Move)
+        {
+            var validMoves = piece.GetValidMoves(_board);
+            if (!validMoves.Contains(move.ToPos))
+            {
+                GameLogger.Error("AI", $"SIMULATION BUG: {piece.PieceType} at {piece.BoardPosition.ToChessNotation()} " +
+                    $"cannot move to {move.ToPos.ToChessNotation()} - not in valid moves!");
+                GameLogger.Error("AI", $"Valid moves: [{string.Join(", ", validMoves.Select(m => m.ToChessNotation()))}]");
+
+                // Try to find a valid fallback move
+                if (validMoves.Count > 0)
+                {
+                    var fallbackMove = validMoves[0];
+                    GameLogger.Warning("AI", $"Using fallback move to {fallbackMove.ToChessNotation()}");
+                    return new AIDecision(piece, ActionType.Move, fallbackMove, null, -9999, "fallback");
+                }
+                return null;
+            }
+        }
+        else if (action == ActionType.Attack)
+        {
+            var validAttacks = piece.GetAttackablePositions(_board);
+            if (!validAttacks.Contains(move.ToPos))
+            {
+                GameLogger.Error("AI", $"SIMULATION BUG: {piece.PieceType} at {piece.BoardPosition.ToChessNotation()} " +
+                    $"cannot attack {move.ToPos.ToChessNotation()} - not in valid attacks!");
+                return null;
+            }
+        }
+
+        // For MoveAndAttack, we need both the move target and attack target
+        Vector2I? attackTarget = move.MoveType == AI.SimulatedMoveType.MoveAndAttack
+            ? move.AttackPos
+            : null;
+
+        return new AIDecision(piece, action, move.ToPos, attackTarget, result.Score, result.Reason);
+    }
+
+    private void LogBoardState()
+    {
+        var enemyPieces = string.Join(", ", _board.EnemyPieces.Select(p => $"{p.PieceType}@{p.BoardPosition.ToChessNotation()}"));
+        var playerPieces = string.Join(", ", _board.PlayerPieces.Select(p => $"{p.PieceType}@{p.BoardPosition.ToChessNotation()}"));
+        GameLogger.Debug("AI", $"Enemy pieces: [{enemyPieces}]");
+        GameLogger.Debug("AI", $"Player pieces: [{playerPieces}]");
     }
 
     private BasePiece? FindActualPiece(SimulatedPiece simPiece)
@@ -156,9 +298,23 @@ public partial class AIController : Node
         return null;
     }
 
+    private BasePiece? FindActualPieceAtPosition(Vector2I position, PieceType type, Team team)
+    {
+        // Find piece at exact position (more reliable than simulated piece state)
+        var pieces = team == Team.Player ? _board.PlayerPieces : _board.EnemyPieces;
+        foreach (var piece in pieces)
+        {
+            if (piece.BoardPosition == position && piece.PieceType == type)
+            {
+                return piece;
+            }
+        }
+        return null;
+    }
+
     #endregion
 
-    private record AIDecision(BasePiece Piece, ActionType Action, Vector2I? Target, int Score, string Reason);
+    private record AIDecision(BasePiece Piece, ActionType Action, Vector2I? Target, Vector2I? AttackTarget, int Score, string Reason);
 
     #region Heuristic Fallback (Original Implementation)
 
@@ -200,6 +356,11 @@ public partial class AIController : Node
 
     private void EvaluateAttacksWithLookahead(BasePiece piece, List<AIDecision> candidates)
     {
+        // Knight cannot attack standing still - must use move+attack combo
+        // (handled separately via AISearchEngine's MoveAndAttack moves)
+        if (piece.PieceType == PieceType.Knight)
+            return;
+
         var attacks = piece.GetAttackablePositions(_board);
 
         foreach (var targetPos in attacks)
@@ -254,7 +415,7 @@ public partial class AIController : Node
                 reasons.Add("undefended");
             }
 
-            candidates.Add(new AIDecision(piece, ActionType.Attack, targetPos, score, string.Join(", ", reasons)));
+            candidates.Add(new AIDecision(piece, ActionType.Attack, targetPos, null, score, string.Join(", ", reasons)));
         }
     }
 
@@ -324,7 +485,7 @@ public partial class AIController : Node
             if (score < -300)
                 continue;
 
-            candidates.Add(new AIDecision(piece, ActionType.Move, movePos, score, string.Join(", ", reasons)));
+            candidates.Add(new AIDecision(piece, ActionType.Move, movePos, null, score, string.Join(", ", reasons)));
         }
     }
 
@@ -354,7 +515,7 @@ public partial class AIController : Node
                         .OrderByDescending(m => EvaluatePositionalMove(piece, m, new List<string>()))
                         .First();
 
-                    return new AIDecision(piece, ActionType.Move, bestSafe,
+                    return new AIDecision(piece, ActionType.Move, bestSafe, null,
                         pieceValue / 2 + 100,
                         $"save {piece.PieceType} from attack");
                 }
@@ -371,7 +532,7 @@ public partial class AIController : Node
                             // Is this the piece attacking us?
                             if (target.GetAttackablePositions(_board).Contains(piece.BoardPosition))
                             {
-                                return new AIDecision(defender, ActionType.Attack, attackPos,
+                                return new AIDecision(defender, ActionType.Attack, attackPos, null,
                                     PieceValues[target.PieceType] + 200,
                                     $"counter-attack {target.PieceType} threatening {piece.PieceType}");
                             }
@@ -393,7 +554,7 @@ public partial class AIController : Node
 
             if (kingMoves.Count > 0)
             {
-                return new AIDecision(_board.EnemyKing, ActionType.Move, kingMoves[0],
+                return new AIDecision(_board.EnemyKing, ActionType.Move, kingMoves[0], null,
                     5000, "KING ESCAPE!");
             }
         }
@@ -770,10 +931,10 @@ public partial class AIController : Node
         }
 
         if (score > 0)
-            candidates.Add(new AIDecision(piece, ActionType.Ability, null, score, reason));
+            candidates.Add(new AIDecision(piece, ActionType.Ability, null, null, score, reason));
     }
 
-    private void ExecuteDecision(AIDecision decision)
+    private async Task ExecuteDecisionAsync(AIDecision decision)
     {
         switch (decision.Action)
         {
@@ -785,10 +946,28 @@ public partial class AIController : Node
 
             case ActionType.Move when decision.Target.HasValue:
                 _turnController.ExecuteMove(decision.Piece, decision.Target.Value);
+                // Wait for move animation to complete
+                if (_board.IsAnimating)
+                    await ToSignal(_board, GameBoard.SignalName.PieceMoveAnimationComplete);
+                break;
+
+            case ActionType.MoveAndAttack when decision.Target.HasValue && decision.AttackTarget.HasValue:
+                // Knight special: move first, then attack adjacent
+                GameLogger.Info("AI", $"Knight MoveAndAttack: Move to {decision.Target.Value.ToChessNotation()}, attack {decision.AttackTarget.Value.ToChessNotation()}");
+                _turnController.ExecuteKnightMoveAndAttack(
+                    decision.Piece,
+                    decision.Target.Value,
+                    decision.AttackTarget.Value);
+                // Wait for move animation to complete
+                if (_board.IsAnimating)
+                    await ToSignal(_board, GameBoard.SignalName.PieceMoveAnimationComplete);
                 break;
 
             case ActionType.Ability:
                 _turnController.ExecuteAbility(decision.Piece, decision.Target);
+                // Wait for any ability movement animations
+                if (_board.IsAnimating)
+                    await ToSignal(_board, GameBoard.SignalName.PieceMoveAnimationComplete);
                 break;
         }
     }

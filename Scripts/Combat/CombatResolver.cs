@@ -74,10 +74,11 @@ public partial class CombatResolver : Node
             defender.TakeDamage(defenderDamage);
             interposeRook.TakeDamage(rookDamage);
 
-            GameLogger.Debug("Combat", $"INTERPOSE! {attacker.PieceType} attacks {defender.PieceType}: " +
-                     $"Base {attacker.BaseDamage} + {diceResult.Breakdown} = {totalDamage} total. " +
-                     $"Split: {defender.PieceType} takes {defenderDamage}, Rook takes {rookDamage}");
-            GameLogger.Debug("Combat", $"{defender.PieceType} HP: {defender.CurrentHp}/{defender.MaxHp}, " +
+            string atkTeam = attacker.Team == Team.Player ? "W" : "B";
+            string defTeam = defender.Team == Team.Player ? "W" : "B";
+            GameLogger.Debug("Combat", $"[{atkTeam}] {attacker.PieceType} attacks [{defTeam}] {defender.PieceType} - " +
+                     $"INTERPOSE! {totalDamage} dmg split: {defender.PieceType} takes {defenderDamage}, Rook takes {rookDamage}");
+            GameLogger.Debug("Combat", $"  -> [{defTeam}] {defender.PieceType} HP: {defender.CurrentHp}/{defender.MaxHp}, " +
                      $"Rook HP: {interposeRook.CurrentHp}/{interposeRook.MaxHp}");
 
             // Check if Rook died from interpose
@@ -92,16 +93,19 @@ public partial class CombatResolver : Node
             // Normal damage application
             defender.TakeDamage(totalDamage);
 
-            GameLogger.Debug("Combat", $"{attacker.PieceType} attacks {defender.PieceType}: " +
-                     $"Base {attacker.BaseDamage} + {diceResult.Breakdown} = {totalDamage} damage. " +
-                     $"Defender HP: {defender.CurrentHp}/{defender.MaxHp}");
+            string atkTeam = attacker.Team == Team.Player ? "W" : "B";
+            string defTeam = defender.Team == Team.Player ? "W" : "B";
+            GameLogger.Debug("Combat", $"[{atkTeam}] {attacker.PieceType} attacks [{defTeam}] {defender.PieceType} - " +
+                     $"{totalDamage} dmg (base {attacker.BaseDamage} + roll {diceResult.FinalValue}). " +
+                     $"HP: {defender.CurrentHp}/{defender.MaxHp}");
         }
 
         bool destroyed = !defender.IsAlive;
         if (destroyed)
         {
             PieceDestroyed?.Invoke(defender);
-            GameLogger.Debug("Combat", $"{defender.PieceType} destroyed!");
+            string defTeam = defender.Team == Team.Player ? "W" : "B";
+            GameLogger.Debug("Combat", $"  -> [{defTeam}] {defender.PieceType} DESTROYED!");
         }
 
         var result = new CombatResult(attacker, defender, totalDamage, destroyed, diceResult);

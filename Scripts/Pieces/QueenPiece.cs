@@ -12,6 +12,8 @@ namespace Exchange.Pieces;
 /// </summary>
 public partial class QueenPiece : BasePiece
 {
+    private const int AttackRange = 3; // Limited snipe range for tactical play
+
     public QueenPiece(Team team) : base(PieceType.Queen, team) { }
 
     public override List<Vector2I> GetValidMoves(GameBoard board)
@@ -38,11 +40,11 @@ public partial class QueenPiece : BasePiece
     {
         var positions = new List<Vector2I>();
 
-        // Queen attacks in all 8 directions until blocked
+        // Queen attacks in all 8 directions, limited range
         foreach (var dir in Vector2IExtensions.AllDirections)
         {
             var current = BoardPosition + dir;
-            while (current.IsOnBoard())
+            for (int range = 1; range <= AttackRange && current.IsOnBoard(); range++)
             {
                 var piece = board.GetPieceAt(current);
                 if (piece != null)
@@ -62,11 +64,11 @@ public partial class QueenPiece : BasePiece
     {
         var positions = new List<Vector2I>();
 
-        // Queen threatens all tiles in line of sight
+        // Queen threatens tiles in line of sight, limited range
         foreach (var dir in Vector2IExtensions.AllDirections)
         {
             var current = BoardPosition + dir;
-            while (current.IsOnBoard())
+            for (int range = 1; range <= AttackRange && current.IsOnBoard(); range++)
             {
                 positions.Add(current);
                 if (board.IsOccupied(current))

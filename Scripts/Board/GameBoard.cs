@@ -12,10 +12,17 @@ public partial class GameBoard : Node2D
     [Signal] public delegate void PieceSelectedEventHandler(BasePiece piece);
     [Signal] public delegate void TileSelectedEventHandler(Vector2I position);
     [Signal] public delegate void PieceDestroyedEventHandler(BasePiece piece);
+    [Signal] public delegate void PieceMoveAnimationCompleteEventHandler();
+    [Signal] public delegate void AttackAnimationCompleteEventHandler();
+
+    private const float MoveAnimationDuration = 0.2f; // seconds
+    private const float AttackAnimationDuration = 0.35f; // Total time for attack effect
 
     private Tile[,] _tiles = new Tile[8, 8];
     private List<BasePiece> _playerPieces = new();
     private List<BasePiece> _enemyPieces = new();
+    private bool _isAnimating = false;
+    private bool _isAttackAnimating = false;
 
     public IReadOnlyList<BasePiece> PlayerPieces => _playerPieces;
     public IReadOnlyList<BasePiece> EnemyPieces => _enemyPieces;
@@ -96,9 +103,9 @@ public partial class GameBoard : Node2D
     }
 
     /// <summary>
-    /// Moves a piece to a new position
+    /// Moves a piece to a new position with animation
     /// </summary>
-    public bool MovePiece(BasePiece piece, Vector2I newPosition)
+    public bool MovePiece(BasePiece piece, Vector2I newPosition, bool animate = true)
     {
         if (!newPosition.IsOnBoard()) return false;
 
@@ -109,14 +116,98 @@ public partial class GameBoard : Node2D
         var oldTile = GetTile(piece.BoardPosition);
         oldTile.OccupyingPiece = null;
 
-        // Update piece position
+        // Update logical position immediately
         piece.BoardPosition = newPosition;
-        piece.Position = new Vector2(newPosition.X * Tile.TileSize, (7 - newPosition.Y) * Tile.TileSize);
+
+        // Calculate target visual position
+        var targetVisualPos = new Vector2(newPosition.X * Tile.TileSize, (7 - newPosition.Y) * Tile.TileSize);
+
+        if (animate && MoveAnimationDuration > 0)
+        {
+            // Animate the piece movement
+            _isAnimating = true;
+            var tween = CreateTween();
+            tween.TweenProperty(piece, "position", targetVisualPos, MoveAnimationDuration)
+                 .SetTrans(Tween.TransitionType.Quad)
+                 .SetEase(Tween.EaseType.Out);
+            tween.TweenCallback(Callable.From(() =>
+            {
+                _isAnimating = false;
+                EmitSignal(SignalName.PieceMoveAnimationComplete);
+            }));
+        }
+        else
+        {
+            // Instant move (no animation)
+            piece.Position = targetVisualPos;
+        }
 
         // Set new tile
         targetTile.OccupyingPiece = piece;
 
         return true;
+    }
+
+    /// <summary>
+    /// Whether a piece movement animation is currently playing
+    /// </summary>
+    public bool IsAnimating => _isAnimating;
+
+    /// <summary>
+    /// Whether an attack animation is currently playing
+    /// </summary>
+    public bool IsAttackAnimating => _isAttackAnimating;
+
+    /// <summary>
+    /// Shows a visual attack effect from attacker to defender (strike line)
+    /// </summary>
+    public void ShowAttackEffect(Vector2I attackerPos, Vector2I defenderPos, Team attackerTeam)
+    {
+        _isAttackAnimating = true;
+
+        // Calculate pixel positions (center of tiles)
+        float halfTile = Tile.TileSize / 2f;
+        var startPos = new Vector2(attackerPos.X * Tile.TileSize + halfTile, (7 - attackerPos.Y) * Tile.TileSize + halfTile);
+        var endPos = new Vector2(defenderPos.X * Tile.TileSize + halfTile, (7 - defenderPos.Y) * Tile.TileSize + halfTile);
+
+        // Create a Line2D for the attack effect
+        var attackLine = new Line2D
+        {
+            Width = 4f,
+            DefaultColor = attackerTeam == Team.Player ? new Color(0.4f, 0.6f, 1f, 0.9f) : new Color(1f, 0.4f, 0.3f, 0.9f),
+            ZIndex = 50,
+            BeginCapMode = Line2D.LineCapMode.Round,
+            EndCapMode = Line2D.LineCapMode.Round
+        };
+        attackLine.AddPoint(startPos);
+        attackLine.AddPoint(startPos); // Start with zero length, animate to endPos
+        AddChild(attackLine);
+
+        // Animate the line extending to target, then fading
+        var lineTween = CreateTween();
+
+        // Extend line to target (quick strike)
+        lineTween.TweenMethod(
+            Callable.From<float>((t) => {
+                if (IsInstanceValid(attackLine) && attackLine.GetPointCount() >= 2)
+                    attackLine.SetPointPosition(1, startPos.Lerp(endPos, t));
+            }),
+            0f, 1f, 0.1f
+        ).SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.Out);
+
+        // Brief hold
+        lineTween.TweenInterval(0.05f);
+
+        // Fade out
+        lineTween.TweenProperty(attackLine, "modulate:a", 0f, 0.15f);
+
+        // Cleanup and signal completion
+        lineTween.TweenCallback(Callable.From(() =>
+        {
+            attackLine.QueueFree();
+            _isAttackAnimating = false;
+            EmitSignal(SignalName.AttackAnimationComplete);
+        }));
     }
 
     /// <summary>

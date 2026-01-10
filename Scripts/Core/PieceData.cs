@@ -10,7 +10,7 @@ public static class PieceData
 
     public static readonly Dictionary<PieceType, PieceStats> Stats = new()
     {
-        { PieceType.King,   new PieceStats(15, 1, AbilityId.RoyalDecree, -1) },  // -1 = once per match
+        { PieceType.King,   new PieceStats(25, 1, AbilityId.RoyalDecree, -1) },  // -1 = once per match, 25 HP prevents quick snipes
         { PieceType.Queen,  new PieceStats(10, 3, AbilityId.Overextend, 3) },
         { PieceType.Rook,   new PieceStats(13, 2, AbilityId.Interpose, 3) },
         { PieceType.Bishop, new PieceStats(10, 2, AbilityId.Consecration, 3) },

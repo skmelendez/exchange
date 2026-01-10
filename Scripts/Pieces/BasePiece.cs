@@ -62,6 +62,10 @@ public abstract partial class BasePiece : Node2D
 
     protected static readonly Color PlayerColor = new(0.2f, 0.4f, 0.8f);
     protected static readonly Color EnemyColor = new(0.8f, 0.2f, 0.2f);
+    protected static readonly Color DamageFlashColor = new(1f, 0.3f, 0.3f);
+
+    private const float HitAnimationDuration = 0.15f;
+    private const float ShakeAmount = 4f;
 
     public bool IsAlive => CurrentHp > 0;
     public bool CanUseAbility => AbilityCooldownCurrent == 0 &&
@@ -122,15 +126,114 @@ public abstract partial class BasePiece : Node2D
         UpdateHpDisplay();
         EmitSignal(SignalName.HealthChanged, CurrentHp, MaxHp);
 
+        // Play hit animation
+        PlayHitAnimation(amount);
+
         if (CurrentHp <= 0)
             EmitSignal(SignalName.PieceDied, this);
     }
 
+    /// <summary>
+    /// Plays visual feedback when piece takes damage: flash + shake + floating damage number
+    /// </summary>
+    private void PlayHitAnimation(int damageAmount)
+    {
+        if (_visual == null) return;
+
+        var originalColor = Team == Team.Player ? PlayerColor : EnemyColor;
+        var originalPos = _visual.Position;
+
+        // Create damage number
+        var damageLabel = new Label
+        {
+            Text = $"-{damageAmount}",
+            Position = new Vector2(Tile.TileSize / 2 - 10, -5),
+            ZIndex = 100
+        };
+        damageLabel.AddThemeColorOverride("font_color", Colors.Red);
+        damageLabel.AddThemeFontSizeOverride("font_size", 16);
+        AddChild(damageLabel);
+
+        // Animate damage number floating up and fading
+        var damageTween = CreateTween();
+        damageTween.SetParallel(true);
+        damageTween.TweenProperty(damageLabel, "position", damageLabel.Position + new Vector2(0, -30), 0.6f)
+            .SetTrans(Tween.TransitionType.Quad)
+            .SetEase(Tween.EaseType.Out);
+        damageTween.TweenProperty(damageLabel, "modulate:a", 0f, 0.6f)
+            .SetDelay(0.3f);
+        damageTween.SetParallel(false);
+        damageTween.TweenCallback(Callable.From(() => damageLabel.QueueFree()));
+
+        // Flash and shake the piece
+        var hitTween = CreateTween();
+
+        // Flash to damage color
+        hitTween.TweenProperty(_visual, "color", DamageFlashColor, HitAnimationDuration / 2)
+            .SetTrans(Tween.TransitionType.Quad);
+
+        // Shake effect (quick back and forth)
+        hitTween.TweenProperty(_visual, "position", originalPos + new Vector2(ShakeAmount, 0), HitAnimationDuration / 4)
+            .SetTrans(Tween.TransitionType.Sine);
+        hitTween.TweenProperty(_visual, "position", originalPos + new Vector2(-ShakeAmount, 0), HitAnimationDuration / 4)
+            .SetTrans(Tween.TransitionType.Sine);
+        hitTween.TweenProperty(_visual, "position", originalPos, HitAnimationDuration / 4)
+            .SetTrans(Tween.TransitionType.Sine);
+
+        // Return to original color
+        hitTween.TweenProperty(_visual, "color", originalColor, HitAnimationDuration / 2)
+            .SetTrans(Tween.TransitionType.Quad);
+    }
+
     public void Heal(int amount)
     {
+        int actualHeal = Math.Min(amount, MaxHp - CurrentHp);
         CurrentHp = Math.Min(MaxHp, CurrentHp + amount);
         UpdateHpDisplay();
         EmitSignal(SignalName.HealthChanged, CurrentHp, MaxHp);
+
+        // Play heal animation
+        if (actualHeal > 0)
+            PlayHealAnimation(actualHeal);
+    }
+
+    /// <summary>
+    /// Plays visual feedback when piece is healed: green flash + floating heal number
+    /// </summary>
+    private void PlayHealAnimation(int healAmount)
+    {
+        if (_visual == null) return;
+
+        var originalColor = Team == Team.Player ? PlayerColor : EnemyColor;
+
+        // Create heal number
+        var healLabel = new Label
+        {
+            Text = $"+{healAmount}",
+            Position = new Vector2(Tile.TileSize / 2 - 10, -5),
+            ZIndex = 100
+        };
+        healLabel.AddThemeColorOverride("font_color", Colors.LimeGreen);
+        healLabel.AddThemeFontSizeOverride("font_size", 16);
+        AddChild(healLabel);
+
+        // Animate heal number floating up and fading
+        var healTween = CreateTween();
+        healTween.SetParallel(true);
+        healTween.TweenProperty(healLabel, "position", healLabel.Position + new Vector2(0, -30), 0.6f)
+            .SetTrans(Tween.TransitionType.Quad)
+            .SetEase(Tween.EaseType.Out);
+        healTween.TweenProperty(healLabel, "modulate:a", 0f, 0.6f)
+            .SetDelay(0.3f);
+        healTween.SetParallel(false);
+        healTween.TweenCallback(Callable.From(() => healLabel.QueueFree()));
+
+        // Flash green
+        var flashTween = CreateTween();
+        flashTween.TweenProperty(_visual, "color", Colors.LimeGreen, HitAnimationDuration / 2)
+            .SetTrans(Tween.TransitionType.Quad);
+        flashTween.TweenProperty(_visual, "color", originalColor, HitAnimationDuration / 2)
+            .SetTrans(Tween.TransitionType.Quad);
     }
 
     protected void UpdateHpDisplay()

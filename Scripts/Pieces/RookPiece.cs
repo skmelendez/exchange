@@ -12,7 +12,7 @@ namespace Exchange.Pieces;
 /// </summary>
 public partial class RookPiece : BasePiece
 {
-    private const int AttackRange = 3; // "short straight-line range"
+    private const int AttackRange = 2; // "short straight-line range"
 
     /// <summary>
     /// Tracks if Interpose ability is currently active (damage to adjacent allies split with Rook)

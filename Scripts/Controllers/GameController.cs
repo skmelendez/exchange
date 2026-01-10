@@ -102,6 +102,7 @@ public partial class GameController : Node2D
         _turnController.PieceSelected += OnPieceSelected;
         _turnController.ValidMovesCalculated += OnValidMovesCalculated;
         _turnController.ValidAttacksCalculated += OnValidAttacksCalculated;
+        _turnController.PieceMoved += OnPieceMoved;
 
         _combatResolver.CombatResolved += OnCombatResolved;
     }
@@ -375,8 +376,20 @@ public partial class GameController : Node2D
             GameLogger.Debug("UI", $"Showing {attacks.Count} attack target(s)");
     }
 
+    private void OnPieceMoved(BasePiece piece, Vector2I fromPos, Vector2I toPos)
+    {
+        _ui.ShowMove(piece, fromPos, toPos);
+    }
+
     private void OnCombatResolved(CombatResolver.CombatResult result)
     {
+        // Show attack line effect from attacker to defender
+        _board.ShowAttackEffect(
+            result.Attacker.BoardPosition,
+            result.Defender.BoardPosition,
+            result.Attacker.Team
+        );
+
         _ui.ShowCombatResult(result);
     }
 

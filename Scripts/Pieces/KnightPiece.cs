@@ -43,8 +43,8 @@ public partial class KnightPiece : BasePiece
     {
         var positions = new List<Vector2I>();
 
-        // Knight can only attack adjacent tiles
-        foreach (var dir in Vector2IExtensions.AllDirections)
+        // Knight can only attack CARDINAL adjacent tiles (up/down/left/right, NOT diagonal)
+        foreach (var dir in Vector2IExtensions.CardinalDirections)
         {
             var pos = BoardPosition + dir;
             if (!pos.IsOnBoard()) continue;
@@ -59,9 +59,9 @@ public partial class KnightPiece : BasePiece
 
     public override List<Vector2I> GetThreatenedPositions(GameBoard board)
     {
-        // Knight threatens all adjacent tiles
+        // Knight threatens CARDINAL adjacent tiles only (up/down/left/right, NOT diagonal)
         var positions = new List<Vector2I>();
-        foreach (var dir in Vector2IExtensions.AllDirections)
+        foreach (var dir in Vector2IExtensions.CardinalDirections)
         {
             var pos = BoardPosition + dir;
             if (pos.IsOnBoard())

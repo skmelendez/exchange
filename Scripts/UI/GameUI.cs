@@ -154,11 +154,31 @@ public partial class GameUI : CanvasLayer
 
     public void ShowCombatResult(CombatResolver.CombatResult result)
     {
-        string entry = $"{result.Attacker.PieceType} -> {result.Defender.PieceType}: " +
-                       $"{result.DamageDealt} dmg ({result.DiceResult.Breakdown})";
+        string atkTeam = result.Attacker.Team == Team.Player ? "W" : "B";
+        string defTeam = result.Defender.Team == Team.Player ? "W" : "B";
+        string atkPos = result.Attacker.BoardPosition.ToChessNotation();
+        string defPos = result.Defender.BoardPosition.ToChessNotation();
+
+        string entry = $"[{atkTeam}] {result.Attacker.PieceType} ({atkPos}) x [{defTeam}] {result.Defender.PieceType} ({defPos}): " +
+                       $"{result.DamageDealt} dmg";
         if (result.DefenderDestroyed)
             entry += " [DESTROYED]";
 
+        AddToLog(entry);
+    }
+
+    public void ShowMove(BasePiece piece, Vector2I fromPos, Vector2I toPos)
+    {
+        string team = piece.Team == Team.Player ? "W" : "B";
+        string entry = $"[{team}] {piece.PieceType} {fromPos.ToChessNotation()} -> {toPos.ToChessNotation()}";
+        AddToLog(entry);
+    }
+
+    public void ShowAbilityUse(BasePiece piece, string abilityName)
+    {
+        string team = piece.Team == Team.Player ? "W" : "B";
+        string pos = piece.BoardPosition.ToChessNotation();
+        string entry = $"[{team}] {piece.PieceType} ({pos}) uses {abilityName}";
         AddToLog(entry);
     }
 

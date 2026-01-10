@@ -20,6 +20,7 @@ public partial class TurnController : Node
     public event Action<BasePiece?>? PieceSelected;
     public event Action<List<Vector2I>>? ValidMovesCalculated;
     public event Action<List<Vector2I>>? ValidAttacksCalculated;
+    public event Action<BasePiece, Vector2I, Vector2I>? PieceMoved;  // piece, from, to
 
     private GameState _gameState = null!;
     private GameBoard _board = null!;
@@ -134,10 +135,19 @@ public partial class TurnController : Node
             _validMoves = piece.GetValidMoves(_board);
             _validAttacks = piece.GetAttackablePositions(_board);
 
-            // Knight special: if already moved, can still attack
-            if (piece is KnightPiece knight && knight.HasMovedThisTurn)
+            // Knight special rule: MUST move before attacking
+            if (piece is KnightPiece knight)
             {
-                _validMoves.Clear(); // Can't move again
+                if (knight.HasMovedThisTurn)
+                {
+                    // Already moved - can attack but not move again
+                    _validMoves.Clear();
+                }
+                else
+                {
+                    // Hasn't moved yet - can move but NOT attack standing still
+                    _validAttacks.Clear();
+                }
             }
         }
 
@@ -227,23 +237,31 @@ public partial class TurnController : Node
 
     /// <summary>
     /// Cancel multi-step ability execution
+    /// Note: Some phases cannot be cancelled (e.g., Skirmish reposition - Knight MUST move after attacking)
     /// </summary>
     public void CancelAbility()
     {
-        if (_abilityPhase != AbilityPhase.None)
-        {
-            GameLogger.Debug("Ability", $"Cancelled {_abilityPhase}");
-            _abilityPhase = AbilityPhase.None;
-            _abilityPiece = null;
-            _abilityValidPositions.Clear();
+        if (_abilityPhase == AbilityPhase.None)
+            return;
 
-            // Re-emit selection to restore normal UI
-            PieceSelected?.Invoke(_selectedPiece);
-            if (_selectedPiece != null)
-            {
-                ValidMovesCalculated?.Invoke(_selectedPiece.GetValidMoves(_board));
-                ValidAttacksCalculated?.Invoke(_selectedPiece.GetAttackablePositions(_board));
-            }
+        // Skirmish reposition CANNOT be cancelled - Knight must move after attacking
+        if (_abilityPhase == AbilityPhase.SkirmishSelectReposition)
+        {
+            GameLogger.Debug("Ability", "Cannot cancel Skirmish reposition - Knight must move!");
+            return;
+        }
+
+        GameLogger.Debug("Ability", $"Cancelled {_abilityPhase}");
+        _abilityPhase = AbilityPhase.None;
+        _abilityPiece = null;
+        _abilityValidPositions.Clear();
+
+        // Re-emit selection to restore normal UI
+        PieceSelected?.Invoke(_selectedPiece);
+        if (_selectedPiece != null)
+        {
+            ValidMovesCalculated?.Invoke(_selectedPiece.GetValidMoves(_board));
+            ValidAttacksCalculated?.Invoke(_selectedPiece.GetAttackablePositions(_board));
         }
     }
 
@@ -291,10 +309,15 @@ public partial class TurnController : Node
         if (targetTile.IsThreatened(piece.Team))
             piece.EnteredThreatZoneThisTurn = true;
 
+        var fromPos = piece.BoardPosition;
         _board.MovePiece(piece, targetPosition);
         _board.RecalculateThreatZones();
 
-        GameLogger.Debug("Action", $"{piece.PieceType} moves to {targetPosition.ToChessNotation()}");
+        string team = piece.Team == Team.Player ? "W" : "B";
+        GameLogger.Debug("Action", $"[{team}] {piece.PieceType} moves {fromPos.ToChessNotation()} -> {targetPosition.ToChessNotation()}");
+
+        // Notify UI of move
+        PieceMoved?.Invoke(piece, fromPos, targetPosition);
 
         // Knight special rule: can still attack after moving
         if (piece is KnightPiece knight)
@@ -460,6 +483,7 @@ public partial class TurnController : Node
     private void ExecuteOverextendMove(BasePiece piece, Vector2I targetPosition)
     {
         // Check threat zone
+        var fromPos = piece.BoardPosition;
         var targetTile = _board.GetTile(targetPosition);
         if (targetTile.IsThreatened(piece.Team))
             piece.EnteredThreatZoneThisTurn = true;
@@ -467,7 +491,11 @@ public partial class TurnController : Node
         _board.MovePiece(piece, targetPosition);
         _board.RecalculateThreatZones();
 
-        GameLogger.Debug("Ability", $"Overextend: Queen moves to {targetPosition.ToChessNotation()}");
+        string team = piece.Team == Team.Player ? "W" : "B";
+        GameLogger.Debug("Ability", $"[{team}] Queen Overextend {fromPos.ToChessNotation()} -> {targetPosition.ToChessNotation()}");
+
+        // Notify UI of move
+        PieceMoved?.Invoke(piece, fromPos, targetPosition);
 
         // Transition to attack phase
         var attacks = piece.GetAttackablePositions(_board);
@@ -604,6 +632,7 @@ public partial class TurnController : Node
     private void ExecuteSkirmishReposition(KnightPiece knight, Vector2I targetPosition)
     {
         // Check threat zone
+        var fromPos = knight.BoardPosition;
         var targetTile = _board.GetTile(targetPosition);
         if (targetTile.IsThreatened(knight.Team))
             knight.EnteredThreatZoneThisTurn = true;
@@ -611,7 +640,11 @@ public partial class TurnController : Node
         _board.MovePiece(knight, targetPosition);
         _board.RecalculateThreatZones();
 
-        GameLogger.Debug("Ability", $"Skirmish: Knight repositions to {targetPosition.ToChessNotation()}");
+        string team = knight.Team == Team.Player ? "W" : "B";
+        GameLogger.Debug("Ability", $"[{team}] Knight Skirmish reposition {fromPos.ToChessNotation()} -> {targetPosition.ToChessNotation()}");
+
+        // Notify UI of move
+        PieceMoved?.Invoke(knight, fromPos, targetPosition);
 
         CompleteSkirmish(knight);
     }
@@ -782,5 +815,78 @@ public partial class TurnController : Node
         {
             EndAction(knight, ActionType.Move);
         }
+    }
+
+    /// <summary>
+    /// Execute Knight's special move+attack combo (AI use).
+    /// Knight moves to moveTarget, then attacks the piece at attackTarget.
+    /// </summary>
+    public void ExecuteKnightMoveAndAttack(BasePiece knight, Vector2I moveTarget, Vector2I attackTarget)
+    {
+        if (knight.PieceType != PieceType.Knight)
+        {
+            GameLogger.Error("Knight", "ExecuteKnightMoveAndAttack called on non-Knight piece!");
+            return;
+        }
+
+        // Validate the move
+        var validMoves = knight.GetValidMoves(_board);
+        if (!validMoves.Contains(moveTarget))
+        {
+            GameLogger.Error("Knight", $"Invalid move target {moveTarget.ToChessNotation()} for Knight at {knight.BoardPosition.ToChessNotation()}");
+            EndAction(knight, ActionType.Move);
+            return;
+        }
+
+        // Execute the move
+        var fromPos = knight.BoardPosition;
+        var targetTile = _board.GetTile(moveTarget);
+        if (targetTile.IsThreatened(knight.Team))
+            knight.EnteredThreatZoneThisTurn = true;
+
+        _board.MovePiece(knight, moveTarget);
+        _board.RecalculateThreatZones();
+
+        string team = knight.Team == Team.Player ? "W" : "B";
+        GameLogger.Debug("Knight", $"[{team}] Knight {fromPos.ToChessNotation()} -> {moveTarget.ToChessNotation()}");
+
+        // Notify UI of move
+        PieceMoved?.Invoke(knight, fromPos, moveTarget);
+
+        // Now validate and execute the attack
+        var validAttacks = knight.GetAttackablePositions(_board);
+        if (!validAttacks.Contains(attackTarget))
+        {
+            GameLogger.Error("Knight", $"Invalid attack target {attackTarget.ToChessNotation()} from {moveTarget.ToChessNotation()}");
+            GameLogger.Error("Knight", $"Valid attacks: [{string.Join(", ", validAttacks.Select(a => a.ToChessNotation()))}]");
+            EndAction(knight, ActionType.Move);
+            return;
+        }
+
+        var defender = _board.GetPieceAt(attackTarget);
+        if (defender == null)
+        {
+            GameLogger.Error("Knight", $"No piece at attack target {attackTarget.ToChessNotation()}");
+            EndAction(knight, ActionType.Move);
+            return;
+        }
+
+        // Execute the attack
+        var result = _combatResolver.ResolveAttack(knight, defender, _board);
+
+        if (result.DefenderDestroyed)
+        {
+            _board.RemovePiece(defender);
+            _board.RecalculateThreatZones();
+
+            if (defender.PieceType == PieceType.King)
+            {
+                EndMatch(knight.Team);
+                return;
+            }
+        }
+
+        GameLogger.Debug("Knight", $"Knight attacked {defender.PieceType} at {attackTarget.ToChessNotation()}");
+        EndAction(knight, ActionType.MoveAndAttack);
     }
 }

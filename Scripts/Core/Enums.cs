@@ -33,6 +33,7 @@ public enum ActionType
     None,
     Move,
     Attack,
+    MoveAndAttack,  // Knight: move first, then attack adjacent
     Ability
 }
 
