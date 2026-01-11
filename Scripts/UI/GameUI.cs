@@ -7,6 +7,11 @@ using Exchange.Controllers;
 namespace Exchange.UI;
 
 /// <summary>
+/// Callback type for pawn promotion selection
+/// </summary>
+public delegate void PromotionSelectedHandler(PieceType selectedType);
+
+/// <summary>
 /// Main game UI displaying turn info, selected piece, combat log, etc.
 /// </summary>
 public partial class GameUI : CanvasLayer
@@ -23,6 +28,11 @@ public partial class GameUI : CanvasLayer
 
     private List<string> _combatLog = new();
     private const int MaxLogEntries = 8;
+
+    // Promotion dialog
+    private Control? _promotionDialog;
+    private PromotionSelectedHandler? _promotionCallback;
+    public bool IsPromotionDialogOpen => _promotionDialog != null && _promotionDialog.Visible;
 
     public void Initialize(GameState gameState, TurnController turnController)
     {
@@ -198,6 +208,21 @@ public partial class GameUI : CanvasLayer
         AddChild(popup);
     }
 
+    public void ShowDrawResult(string reason)
+    {
+        AddToLog($"=== DRAW: {reason} ===");
+
+        // Show popup
+        var popup = new Label
+        {
+            Text = "DRAW!",
+            Position = new Vector2(300, 300)
+        };
+        popup.AddThemeColorOverride("font_color", Colors.Gray);
+        popup.AddThemeFontSizeOverride("font_size", 48);
+        AddChild(popup);
+    }
+
     private void AddToLog(string entry)
     {
         _combatLog.Insert(0, entry);
@@ -206,4 +231,140 @@ public partial class GameUI : CanvasLayer
 
         _combatLogLabel.Text = string.Join("\n", _combatLog);
     }
+
+    #region Pawn Promotion Dialog
+
+    /// <summary>
+    /// Shows the pawn promotion dialog and calls the callback when a piece is selected.
+    /// </summary>
+    public void ShowPromotionDialog(Vector2I pawnPosition, PromotionSelectedHandler onSelected)
+    {
+        _promotionCallback = onSelected;
+
+        // Create semi-transparent background overlay
+        var overlay = new ColorRect
+        {
+            Color = new Color(0, 0, 0, 0.6f),
+            Size = GetViewport().GetVisibleRect().Size,
+            Position = Vector2.Zero,
+            ZIndex = 90
+        };
+
+        // Create dialog container
+        _promotionDialog = new Control { ZIndex = 100 };
+        _promotionDialog.AddChild(overlay);
+
+        // Dialog panel
+        var panel = new PanelContainer
+        {
+            Position = new Vector2(250, 200)
+        };
+        _promotionDialog.AddChild(panel);
+
+        var vbox = new VBoxContainer();
+        panel.AddChild(vbox);
+
+        // Title
+        var title = new Label
+        {
+            Text = "Pawn Promotion!",
+            HorizontalAlignment = HorizontalAlignment.Center
+        };
+        title.AddThemeColorOverride("font_color", Colors.Gold);
+        title.AddThemeFontSizeOverride("font_size", 24);
+        vbox.AddChild(title);
+
+        var subtitle = new Label
+        {
+            Text = $"Choose a piece for your pawn at {pawnPosition.ToChessNotation()}:",
+            HorizontalAlignment = HorizontalAlignment.Center
+        };
+        subtitle.AddThemeColorOverride("font_color", Colors.White);
+        subtitle.AddThemeFontSizeOverride("font_size", 14);
+        vbox.AddChild(subtitle);
+
+        vbox.AddChild(new HSeparator());
+
+        // Piece selection buttons
+        var buttonContainer = new HBoxContainer();
+        buttonContainer.AddThemeConstantOverride("separation", 10);
+        vbox.AddChild(buttonContainer);
+
+        CreatePromotionButton(buttonContainer, PieceType.Queen, "Q", "Queen (15 HP, 3 DMG)");
+        CreatePromotionButton(buttonContainer, PieceType.Rook, "R", "Rook (12 HP, 2 DMG)");
+        CreatePromotionButton(buttonContainer, PieceType.Bishop, "B", "Bishop (8 HP, 2 DMG)");
+        CreatePromotionButton(buttonContainer, PieceType.Knight, "N", "Knight (10 HP, 2 DMG)");
+
+        AddChild(_promotionDialog);
+
+        AddToLog($"Pawn at {pawnPosition.ToChessNotation()} ready for promotion!");
+    }
+
+    private void CreatePromotionButton(HBoxContainer container, PieceType pieceType, string letter, string tooltip)
+    {
+        var button = new Button
+        {
+            CustomMinimumSize = new Vector2(80, 80),
+            TooltipText = tooltip
+        };
+
+        var vbox = new VBoxContainer
+        {
+            AnchorsPreset = (int)Control.LayoutPreset.FullRect
+        };
+        button.AddChild(vbox);
+
+        var letterLabel = new Label
+        {
+            Text = letter,
+            HorizontalAlignment = HorizontalAlignment.Center
+        };
+        letterLabel.AddThemeFontSizeOverride("font_size", 32);
+        letterLabel.AddThemeColorOverride("font_color", Colors.White);
+        vbox.AddChild(letterLabel);
+
+        var nameLabel = new Label
+        {
+            Text = pieceType.ToString(),
+            HorizontalAlignment = HorizontalAlignment.Center
+        };
+        nameLabel.AddThemeFontSizeOverride("font_size", 12);
+        nameLabel.AddThemeColorOverride("font_color", Colors.LightGray);
+        vbox.AddChild(nameLabel);
+
+        button.Pressed += () => OnPromotionSelected(pieceType);
+        container.AddChild(button);
+    }
+
+    private void OnPromotionSelected(PieceType selectedType)
+    {
+        GameLogger.Info("UI", $"Promotion selected: {selectedType}");
+        AddToLog($"Pawn promoted to {selectedType}!");
+
+        // Hide and cleanup dialog
+        if (_promotionDialog != null)
+        {
+            _promotionDialog.QueueFree();
+            _promotionDialog = null;
+        }
+
+        // Invoke callback
+        _promotionCallback?.Invoke(selectedType);
+        _promotionCallback = null;
+    }
+
+    /// <summary>
+    /// Force close the promotion dialog (e.g., on match end)
+    /// </summary>
+    public void ClosePromotionDialog()
+    {
+        if (_promotionDialog != null)
+        {
+            _promotionDialog.QueueFree();
+            _promotionDialog = null;
+        }
+        _promotionCallback = null;
+    }
+
+    #endregion
 }

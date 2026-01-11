@@ -211,6 +211,75 @@ public partial class GameBoard : Node2D
     }
 
     /// <summary>
+    /// Promotes a pawn to a new piece type at the same position.
+    /// Returns the newly created piece.
+    /// </summary>
+    public BasePiece PromotePawn(BasePiece pawn, PieceType promotionType, Func<PieceType, Team, BasePiece> pieceFactory)
+    {
+        if (pawn.PieceType != PieceType.Pawn)
+        {
+            GameLogger.Error("Board", $"Cannot promote non-pawn piece: {pawn.PieceType}");
+            return pawn;
+        }
+
+        if (promotionType == PieceType.King || promotionType == PieceType.Pawn)
+        {
+            GameLogger.Error("Board", $"Cannot promote pawn to {promotionType}");
+            return pawn;
+        }
+
+        var position = pawn.BoardPosition;
+        var team = pawn.Team;
+
+        // Calculate HP ratio to preserve relative health
+        float hpRatio = (float)pawn.CurrentHp / pawn.MaxHp;
+
+        // Remove the pawn from the board (don't use RemovePiece - it queues free)
+        var tile = GetTile(position);
+        tile.OccupyingPiece = null;
+
+        if (team == Team.Player)
+            _playerPieces.Remove(pawn);
+        else
+            _enemyPieces.Remove(pawn);
+
+        pawn.QueueFree();
+
+        // Create the promoted piece
+        var newPiece = pieceFactory(promotionType, team);
+
+        // Set HP proportionally (promoted piece keeps relative health)
+        int newHp = Math.Max(1, (int)(newPiece.MaxHp * hpRatio));
+
+        // Place the new piece
+        newPiece.BoardPosition = position;
+        newPiece.Position = new Vector2(position.X * Tile.TileSize, (7 - position.Y) * Tile.TileSize);
+        tile.OccupyingPiece = newPiece;
+
+        if (team == Team.Player)
+            _playerPieces.Add(newPiece);
+        else
+            _enemyPieces.Add(newPiece);
+
+        AddChild(newPiece);
+
+        // Set HP proportionally (deferred to ensure _Ready has run)
+        CallDeferred(nameof(SetPromotedPieceHp), newPiece, newHp);
+
+        GameLogger.Info("Board", $"Pawn promoted to {promotionType} at {position.ToChessNotation()} with {newHp}/{newPiece.MaxHp} HP");
+
+        return newPiece;
+    }
+
+    /// <summary>
+    /// Helper for deferred HP setting after promotion
+    /// </summary>
+    private void SetPromotedPieceHp(BasePiece piece, int hp)
+    {
+        piece.SetHpDirect(hp);
+    }
+
+    /// <summary>
     /// Removes a piece from the board (destroyed)
     /// </summary>
     public void RemovePiece(BasePiece piece)

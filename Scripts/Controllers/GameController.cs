@@ -99,10 +99,12 @@ public partial class GameController : Node2D
     {
         _turnController.TurnStarted += OnTurnStarted;
         _turnController.MatchEnded += OnMatchEnded;
+        _turnController.MatchDrawn += OnMatchDrawn;
         _turnController.PieceSelected += OnPieceSelected;
         _turnController.ValidMovesCalculated += OnValidMovesCalculated;
         _turnController.ValidAttacksCalculated += OnValidAttacksCalculated;
         _turnController.PieceMoved += OnPieceMoved;
+        _turnController.PawnPromotionRequired += OnPawnPromotionRequired;
 
         _combatResolver.CombatResolved += OnCombatResolved;
     }
@@ -341,6 +343,15 @@ public partial class GameController : Node2D
         EmitSignal(SignalName.CombatMatchEnded, (int)winner);
     }
 
+    private void OnMatchDrawn(string reason)
+    {
+        _ui.ShowDrawResult(reason);
+        GameLogger.Info("GameController", $"Match ended in DRAW: {reason}");
+
+        // For draws, emit -1 to indicate no winner (MainGameController will handle this)
+        EmitSignal(SignalName.CombatMatchEnded, -1);
+    }
+
     private void OnPieceSelected(BasePiece? piece)
     {
         ClearHighlights();
@@ -391,6 +402,19 @@ public partial class GameController : Node2D
         );
 
         _ui.ShowCombatResult(result);
+    }
+
+    private void OnPawnPromotionRequired(PawnPiece pawn)
+    {
+        GameLogger.Info("GameController", $"Pawn promotion required at {pawn.BoardPosition.ToChessNotation()}");
+        ClearHighlights();
+
+        // Show promotion dialog
+        _ui.ShowPromotionDialog(pawn.BoardPosition, (selectedType) =>
+        {
+            // Complete the promotion in TurnController
+            _turnController.CompletePromotion(selectedType);
+        });
     }
 
     private void ClearHighlights()

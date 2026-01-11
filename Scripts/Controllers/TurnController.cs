@@ -1,4 +1,5 @@
 using Godot;
+using System.Linq;
 using Exchange.Core;
 using Exchange.Board;
 using Exchange.Pieces;
@@ -17,10 +18,12 @@ public partial class TurnController : Node
     public event Action<Team>? TurnEnded;
     public event Action<BasePiece, ActionType>? ActionCompleted;
     public event Action<Team>? MatchEnded;
+    public event Action<string>? MatchDrawn;  // Called when match ends in draw (reason provided)
     public event Action<BasePiece?>? PieceSelected;
     public event Action<List<Vector2I>>? ValidMovesCalculated;
     public event Action<List<Vector2I>>? ValidAttacksCalculated;
     public event Action<BasePiece, Vector2I, Vector2I>? PieceMoved;  // piece, from, to
+    public event Action<PawnPiece>? PawnPromotionRequired;  // For player pawn promotion UI
 
     private GameState _gameState = null!;
     private GameBoard _board = null!;
@@ -37,6 +40,13 @@ public partial class TurnController : Node
     private AbilityPhase _abilityPhase = AbilityPhase.None;
     private BasePiece? _abilityPiece;
     private List<Vector2I> _abilityValidPositions = new();
+
+    // Pawn promotion state
+    private PawnPiece? _pendingPromotionPawn;
+    public bool IsAwaitingPromotion => _pendingPromotionPawn != null;
+
+    // Damage tracking for 50-move draw rule
+    private bool _damageDealtThisTurn = false;
 
     public BasePiece? SelectedPiece => _selectedPiece;
     public bool IsPlayerTurn => _gameState.CurrentPhase == GamePhase.PlayerTurn;
@@ -319,6 +329,13 @@ public partial class TurnController : Node
         // Notify UI of move
         PieceMoved?.Invoke(piece, fromPos, targetPosition);
 
+        // Check for pawn promotion
+        if (piece is PawnPiece pawn && pawn.ShouldPromote)
+        {
+            HandlePawnPromotion(pawn, ActionType.Move);
+            return; // Don't end turn yet - waiting for promotion selection
+        }
+
         // Knight special rule: can still attack after moving
         if (piece is KnightPiece knight)
         {
@@ -379,6 +396,10 @@ public partial class TurnController : Node
 
         var result = _combatResolver.ResolveAttack(attacker, defender, _board);
 
+        // Track damage for 50-move draw rule
+        if (result.DamageDealt > 0)
+            _damageDealtThisTurn = true;
+
         if (result.DefenderDestroyed)
         {
             _board.RemovePiece(defender);
@@ -434,7 +455,10 @@ public partial class TurnController : Node
             case AbilityId.Advance:
                 piece.StartAbilityCooldown();
                 ExecuteAdvance(piece as PawnPiece);
-                EndAction(piece, ActionType.Ability);
+                // Only end action if no promotion occurred
+                // (HandlePawnPromotion will call EndAction after promotion completes)
+                if (!IsAwaitingPromotion)
+                    EndAction(piece, ActionType.Ability);
                 break;
         }
     }
@@ -688,7 +712,69 @@ public partial class TurnController : Node
         _board.RecalculateThreatZones();
 
         GameLogger.Debug("Ability", $"Advance! Pawn moves to {target.Value.ToChessNotation()}");
+
+        // Check for promotion after Advance
+        if (pawn.ShouldPromote)
+        {
+            // Ability already started cooldown in ExecuteAbility, just handle promotion
+            HandlePawnPromotion(pawn, ActionType.Ability);
+            // Don't call EndAction - HandlePawnPromotion will do that via CompletePromotion
+        }
     }
+
+    #region Pawn Promotion
+
+    /// <summary>
+    /// Handles pawn promotion when a pawn reaches the opposite end
+    /// </summary>
+    private void HandlePawnPromotion(PawnPiece pawn, ActionType originalAction)
+    {
+        GameLogger.Info("Promotion", $"{pawn.Team} Pawn at {pawn.BoardPosition.ToChessNotation()} is ready for promotion!");
+
+        _pendingPromotionPawn = pawn;
+
+        if (pawn.Team == Team.Player)
+        {
+            // Player pawn: emit event so UI can show selection dialog
+            PawnPromotionRequired?.Invoke(pawn);
+            // Turn will continue when CompletePromotion is called
+        }
+        else
+        {
+            // AI pawn: auto-promote to Queen (strongest piece)
+            CompletePromotion(PieceType.Queen, originalAction);
+        }
+    }
+
+    /// <summary>
+    /// Complete the promotion after piece type selection.
+    /// Called by UI for player pawns, or automatically for AI pawns.
+    /// </summary>
+    public void CompletePromotion(PieceType promotionType, ActionType? actionOverride = null)
+    {
+        if (_pendingPromotionPawn == null)
+        {
+            GameLogger.Error("Promotion", "CompletePromotion called but no pending promotion!");
+            return;
+        }
+
+        var pawn = _pendingPromotionPawn;
+        var originalAction = actionOverride ?? ActionType.Move;
+        _pendingPromotionPawn = null;
+
+        // Perform the actual promotion
+        var newPiece = _board.PromotePawn(pawn, promotionType, PieceFactory.Create);
+
+        GameLogger.Info("Promotion", $"Pawn promoted to {promotionType} at {newPiece.BoardPosition.ToChessNotation()}");
+
+        // Recalculate threat zones with new piece
+        _board.RecalculateThreatZones();
+
+        // End the turn
+        EndAction(newPiece, originalAction);
+    }
+
+    #endregion
 
     private void EndAction(BasePiece piece, ActionType action)
     {
@@ -704,6 +790,21 @@ public partial class TurnController : Node
     private void EndTurn()
     {
         GameLogger.Debug("Turn", $"=== EndTurn called === Current phase: {_gameState.CurrentPhase}");
+
+        // Update moves-without-damage counter for 50-move draw rule
+        if (_damageDealtThisTurn)
+        {
+            _gameState.MovesWithoutDamage = 0;
+            _damageDealtThisTurn = false;
+        }
+        else
+        {
+            _gameState.MovesWithoutDamage++;
+        }
+
+        // Check for draw conditions
+        if (CheckDrawConditions())
+            return;
 
         // Check king threat status for next turn bonus
         _gameState.PlayerKingThreatened = _board.IsKingThreatened(Team.Player);
@@ -749,6 +850,40 @@ public partial class TurnController : Node
 
         GameLogger.Info("Match", $"{winner} wins!");
         MatchEnded?.Invoke(winner);
+    }
+
+    /// <summary>
+    /// Check for draw conditions and end match if draw occurred
+    /// </summary>
+    private bool CheckDrawConditions()
+    {
+        // Draw condition 1: Only kings left (insufficient material)
+        var alivePieces = _board.PlayerPieces.Concat(_board.EnemyPieces).Where(p => p.IsAlive).ToList();
+        var nonKingPieces = alivePieces.Where(p => p.PieceType != PieceType.King).ToList();
+
+        if (nonKingPieces.Count == 0)
+        {
+            DrawMatch("Only kings remain - insufficient material");
+            return true;
+        }
+
+        // Draw condition 2: 50 moves without damage (stalemate)
+        if (_gameState.MovesWithoutDamage >= GameState.DrawMovesWithoutDamage)
+        {
+            DrawMatch($"{GameState.DrawMovesWithoutDamage} moves without damage - stalemate");
+            return true;
+        }
+
+        return false;
+    }
+
+    private void DrawMatch(string reason)
+    {
+        _gameState.CurrentPhase = GamePhase.MatchEnd;
+        _awaitingAction = false;
+
+        GameLogger.Info("Match", $"DRAW: {reason}");
+        MatchDrawn?.Invoke(reason);
     }
 
     /// <summary>

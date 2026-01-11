@@ -1,0 +1,14 @@
+# Core ML dependencies
+torch>=2.0.0
+numpy>=1.24.0
+onnx>=1.14.0
+onnxruntime>=1.15.0
+
+# Training utilities
+tqdm>=4.65.0
+tensorboard>=2.13.0
+
+# Development
+pytest>=7.0.0
+black>=23.0.0
+mypy>=1.0.0

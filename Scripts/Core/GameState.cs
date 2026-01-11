@@ -18,6 +18,10 @@ public partial class GameState : Node
     public Team CurrentTeam => CurrentPhase == GamePhase.PlayerTurn ? Team.Player : Team.Enemy;
     public int TurnNumber { get; set; } = 1;
 
+    // Draw condition tracking
+    public const int DrawMovesWithoutDamage = 30;  // Draw after 30 moves with no damage
+    public int MovesWithoutDamage { get; set; } = 0;
+
     // Combat modifiers (reset each match)
     public int PlayerDiceModifier { get; set; } = 0;
     public int EnemyDiceModifier { get; set; } = 0;
@@ -54,6 +58,7 @@ public partial class GameState : Node
     {
         CurrentPhase = GamePhase.PlayerTurn;
         TurnNumber = 1;
+        MovesWithoutDamage = 0;
         PlayerDiceModifier = 0;
         EnemyDiceModifier = 0;
         PlayerKingThreatened = false;

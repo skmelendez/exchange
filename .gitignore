@@ -51,3 +51,4 @@ ehthumbs.db
 *.bak
 *.backup
 *.old
+**/venv/**

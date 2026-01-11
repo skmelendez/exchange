@@ -235,15 +235,75 @@ For depth 1 or as backup, the original heuristic system remains:
 
 ---
 
+## Neural Network Evaluation (NEW!)
+
+The hand-tuned evaluation function can be replaced with a trained neural network.
+See `Exchange.Training/` for the complete training pipeline.
+
+### Architecture
+
+```
+Input: 27x8x8 tensor
+├── 12 planes: piece positions (6 types × 2 teams)
+├── 6 planes: normalized HP per piece
+├── 6 planes: ability cooldowns
+├── 2 planes: special states (Royal Decree, Interpose)
+└── 1 plane: side to move
+
+Network: ResNet-style (4 residual blocks, ~150k params)
+Output: Single value [-1, 1] → scaled to centipawn
+```
+
+### Training Pipeline
+
+```
+Exchange.Training/
+├── src/game_state.py      # State representation
+├── src/value_network.py   # PyTorch network
+├── src/game_simulator.py  # Python game rules
+├── src/training.py        # Self-play training
+└── src/onnx_export.py     # Export to ONNX
+```
+
+### Quick Start
+
+```bash
+cd Exchange.Training
+pip install -r requirements.txt
+python scripts/train.py --quick      # Test run
+python scripts/train.py --preset medium  # Full training
+```
+
+### Integration
+
+```csharp
+// In AIController or GameController initialization
+NeuralNetExtensions.InitializeNeuralNet("res://models/value_network.onnx");
+NeuralNetExtensions.SetUseNeuralNet(true);
+```
+
+### Personality Models
+
+Train different personalities with reward shaping:
+- **Aggressive**: +bonus for damage dealt
+- **Defensive**: +bonus for HP preservation
+- **King Hunter**: +bonus for king attacks
+- **Berserker**: Ignore own HP in evaluation
+
+---
+
 ## Future Improvements
 
 - [x] True N-ply minimax with alpha-beta pruning
 - [x] Transposition tables for repeated positions
 - [x] MVV-LVA move ordering
 - [x] Incremental cache reuse
+- [x] Neural network evaluation (via ONNX)
+- [x] Self-play training pipeline
 - [ ] Opening book for standard openings
 - [ ] Endgame tablebase for King+piece endings
 - [ ] Monte Carlo tree search for complex positions
 - [ ] Quiescence search (extend search for captures)
 - [ ] Null move pruning
-- [ ] Late move reductions
+- [x] Late move reductions
+- [ ] Personality model training

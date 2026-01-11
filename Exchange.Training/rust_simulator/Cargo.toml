@@ -1,0 +1,21 @@
+[package]
+name = "exchange_simulator"
+version = "0.1.0"
+edition = "2021"
+authors = ["Steven"]
+description = "High-performance game simulator for EXCHANGE training"
+
+[lib]
+name = "exchange_simulator"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module"] }
+fastrand = "2.0"
+numpy = "0.22"
+ndarray = "0.16"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3

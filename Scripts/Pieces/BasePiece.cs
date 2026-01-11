@@ -134,6 +134,15 @@ public abstract partial class BasePiece : Node2D
     }
 
     /// <summary>
+    /// Sets HP directly without animation (used for promotion, initialization)
+    /// </summary>
+    public void SetHpDirect(int hp)
+    {
+        CurrentHp = Math.Clamp(hp, 0, MaxHp);
+        UpdateHpDisplay();
+    }
+
+    /// <summary>
     /// Plays visual feedback when piece takes damage: flash + shake + floating damage number
     /// </summary>
     private void PlayHitAnimation(int damageAmount)

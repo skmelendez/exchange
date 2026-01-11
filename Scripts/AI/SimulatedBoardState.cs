@@ -179,6 +179,12 @@ public class SimulatedBoardState
 
         // Update Zobrist hash - add piece to new position
         ZobristHash ^= ZobristKeys.GetPieceKey(piece.PieceType, piece.Team, move.ToPos);
+
+        // Check for pawn promotion
+        if (WouldPromote(piece, move.ToPos))
+        {
+            PromotePawn(piece, ref undo);
+        }
     }
 
     private void MakeAttackMove(SimulatedMove move, ref MoveUndo undo)
@@ -270,6 +276,12 @@ public class SimulatedBoardState
     {
         var piece = undo.Move.Piece;
 
+        // Undo promotion first (if any)
+        if (undo.WasPromotion)
+        {
+            UndoPromotion(piece, undo);
+        }
+
         // Move piece back
         _board[undo.ToPos.X, undo.ToPos.Y] = null;
         _board[undo.FromPos.X, undo.FromPos.Y] = piece;
@@ -346,7 +358,81 @@ public class SimulatedBoardState
         public SimulatedPiece? CapturedPiece;
         public int TargetPreviousHp;
         public ulong PreviousHash;
+        // Promotion tracking
+        public bool WasPromotion;
+        public PieceType OriginalPieceType;
+        public int OriginalMaxHp;
+        public int OriginalBaseDamage;
     }
+
+    #region Pawn Promotion Helpers
+
+    /// <summary>
+    /// Check if a pawn at the given position would promote
+    /// </summary>
+    public static bool WouldPromote(SimulatedPiece piece, Vector2I position)
+    {
+        if (piece.PieceType != PieceType.Pawn) return false;
+
+        int promotionRow = piece.Team == Team.Player ? 7 : 0;
+        return position.Y == promotionRow;
+    }
+
+    /// <summary>
+    /// Promote a pawn in simulation (converts to Queen by default for AI)
+    /// </summary>
+    private void PromotePawn(SimulatedPiece pawn, ref MoveUndo undo)
+    {
+        if (pawn.PieceType != PieceType.Pawn) return;
+
+        int promotionRow = pawn.Team == Team.Player ? 7 : 0;
+        if (pawn.Position.Y != promotionRow) return;
+
+        // Store original values for undo
+        undo.WasPromotion = true;
+        undo.OriginalPieceType = pawn.PieceType;
+        undo.OriginalMaxHp = pawn.MaxHp;
+        undo.OriginalBaseDamage = pawn.BaseDamage;
+
+        // Remove old piece key from hash
+        ZobristHash ^= ZobristKeys.GetPieceKey(pawn.PieceType, pawn.Team, pawn.Position);
+        ZobristHash ^= ZobristKeys.GetHpKey(pawn, pawn.CurrentHp);
+
+        // Calculate HP ratio to preserve relative health
+        float hpRatio = (float)pawn.CurrentHp / pawn.MaxHp;
+
+        // Promote to Queen (strongest piece, AI default choice)
+        // Using stats from PieceData: Queen has 15 HP, 3 damage
+        pawn.PromoteTo(PieceType.Queen, 15, 3, hpRatio);
+
+        // Add new piece key to hash
+        ZobristHash ^= ZobristKeys.GetPieceKey(pawn.PieceType, pawn.Team, pawn.Position);
+        ZobristHash ^= ZobristKeys.GetHpKey(pawn, pawn.CurrentHp);
+
+        GameLogger.Debug("AI-Sim", $"Pawn promoted to Queen at {pawn.Position.ToChessNotation()}");
+    }
+
+    /// <summary>
+    /// Undo a pawn promotion
+    /// </summary>
+    private void UndoPromotion(SimulatedPiece piece, MoveUndo undo)
+    {
+        if (!undo.WasPromotion) return;
+
+        // Remove current piece key
+        ZobristHash ^= ZobristKeys.GetPieceKey(piece.PieceType, piece.Team, piece.Position);
+        ZobristHash ^= ZobristKeys.GetHpKey(piece, piece.CurrentHp);
+
+        // Restore original pawn stats
+        float hpRatio = (float)piece.CurrentHp / piece.MaxHp;
+        piece.DemoteTo(undo.OriginalPieceType, undo.OriginalMaxHp, undo.OriginalBaseDamage, hpRatio);
+
+        // Add original piece key
+        ZobristHash ^= ZobristKeys.GetPieceKey(piece.PieceType, piece.Team, piece.Position);
+        ZobristHash ^= ZobristKeys.GetHpKey(piece, piece.CurrentHp);
+    }
+
+    #endregion
 }
 
 /// <summary>
@@ -354,12 +440,12 @@ public class SimulatedBoardState
 /// </summary>
 public class SimulatedPiece
 {
-    public PieceType PieceType { get; init; }
+    public PieceType PieceType { get; set; }
     public Team Team { get; init; }
     public Vector2I Position { get; set; }
-    public int MaxHp { get; init; }
+    public int MaxHp { get; set; }
     public int CurrentHp { get; set; }
-    public int BaseDamage { get; init; }
+    public int BaseDamage { get; set; }
 
     public bool IsAlive => CurrentHp > 0;
 
@@ -387,6 +473,28 @@ public class SimulatedPiece
             CurrentHp = CurrentHp,
             BaseDamage = BaseDamage
         };
+    }
+
+    /// <summary>
+    /// Promote this pawn to a new piece type
+    /// </summary>
+    public void PromoteTo(PieceType newType, int newMaxHp, int newBaseDamage, float hpRatio)
+    {
+        PieceType = newType;
+        MaxHp = newMaxHp;
+        BaseDamage = newBaseDamage;
+        CurrentHp = Math.Max(1, (int)(newMaxHp * hpRatio));
+    }
+
+    /// <summary>
+    /// Demote back to original piece type (for undo)
+    /// </summary>
+    public void DemoteTo(PieceType originalType, int originalMaxHp, int originalBaseDamage, float hpRatio)
+    {
+        PieceType = originalType;
+        MaxHp = originalMaxHp;
+        BaseDamage = originalBaseDamage;
+        CurrentHp = Math.Max(1, (int)(originalMaxHp * hpRatio));
     }
 }
 

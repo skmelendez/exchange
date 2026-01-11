@@ -29,6 +29,21 @@ public partial class PawnPiece : BasePiece
 
     public bool IsOnStartingRow => BoardPosition.Y == StartingRow;
 
+    /// <summary>
+    /// The row where this pawn promotes (row 7 for Player, row 0 for Enemy)
+    /// </summary>
+    private int PromotionRow => Team == Team.Player ? 7 : 0;
+
+    /// <summary>
+    /// Returns true if the pawn is on the promotion row and should promote
+    /// </summary>
+    public bool ShouldPromote => BoardPosition.Y == PromotionRow;
+
+    /// <summary>
+    /// Returns true if moving to the given position would result in promotion
+    /// </summary>
+    public bool WouldPromoteAt(Vector2I position) => position.Y == PromotionRow;
+
     public override List<Vector2I> GetValidMoves(GameBoard board)
     {
         var moves = new List<Vector2I>();

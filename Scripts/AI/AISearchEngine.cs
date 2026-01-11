@@ -373,6 +373,12 @@ public class AISearchEngine
         if (!state.HasKing(Team.Enemy))
             return sideToMove == Team.Player ? 50000 + depth : -50000 - depth;
 
+        // Check for draw: only kings left (insufficient material)
+        var alivePieces = state.AllPieces.Where(p => p.IsAlive).ToList();
+        var nonKingPieces = alivePieces.Where(p => p.PieceType != PieceType.King).ToList();
+        if (nonKingPieces.Count == 0)
+            return 0; // Draw - neither side wins
+
         var moves = GenerateAllMoves(state, sideToMove);
         if (moves.Count == 0)
         {
@@ -458,6 +464,12 @@ public class AISearchEngine
             return sideToMove == Team.Enemy ? 50000 + depth : -50000 - depth;
         if (!state.HasKing(Team.Enemy))
             return sideToMove == Team.Player ? 50000 + depth : -50000 - depth;
+
+        // Check for draw: only kings left (insufficient material)
+        var alivePieces = state.AllPieces.Where(p => p.IsAlive).ToList();
+        var nonKingPieces = alivePieces.Where(p => p.PieceType != PieceType.King).ToList();
+        if (nonKingPieces.Count == 0)
+            return 0; // Draw - neither side wins
 
         var moves = GenerateAllMoves(state, sideToMove);
         if (moves.Count == 0)
