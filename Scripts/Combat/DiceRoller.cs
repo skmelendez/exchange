@@ -24,10 +24,11 @@ public static class DiceRoller
     /// Rolls 1d6 for combat with all applicable modifiers.
     /// </summary>
     /// <param name="threatPenalty">Threat zone penalty amount (normally -1, but -2 for Boss Room 1)</param>
+    /// <param name="royalDecreeBonus">Royal Decree bonus (+2 when active, 0 otherwise)</param>
     public static DiceResult RollCombat(
         int baseModifier = 0,
         bool enteredThreatZone = false,
-        bool royalDecreeActive = false,
+        int royalDecreeBonus = 0,
         bool enemyKingWasThreatened = false,
         int threatPenalty = -1)
     {
@@ -42,11 +43,11 @@ public static class DiceRoller
             breakdown.Add($"Threat Zone: {threatPenalty}");
         }
 
-        // Royal Decree: +1 to all allied combat rolls
-        if (royalDecreeActive)
+        // Royal Decree: +2 to all allied combat rolls (3 charges, 2 turns duration)
+        if (royalDecreeBonus > 0)
         {
-            mods += 1;
-            breakdown.Add("Royal Decree: +1");
+            mods += royalDecreeBonus;
+            breakdown.Add($"Royal Decree: +{royalDecreeBonus}");
         }
 
         // If enemy king was threatened at end of their turn, we get +1

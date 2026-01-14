@@ -147,3 +147,32 @@ Knights can **move then attack** in the same turn (unique among pieces):
 - **Penalty:** Moving into enemy threat zone = -1 to next combat roll
 - **King Restriction:** King cannot move into threatened tiles (except Boss Rule 3)
 - **King Threatened Bonus:** If your King is threatened at turn end, enemy gets +1 next attack
+
+---
+
+## Piece Abilities
+
+Each piece has a unique ability (press E to activate):
+
+| Piece | Ability | Effect | Cooldown | Uses/Match |
+|-------|---------|--------|----------|------------|
+| King | Royal Decree | All allied rolls **+2** for **2 turns** | None | **3** |
+| Queen | Overextend | Move then attack; take 2 self-damage | 3 turns | Unlimited |
+| Rook | Interpose | Damage to adjacent allies split with Rook | 3 turns | **5 (W) / 6 (B)** |
+| Bishop | Consecration | Heal diagonal ally 1d6 HP (range 1-3) | 3 turns | **3** |
+| Knight | Skirmish | Attack adjacent enemy, then reposition 1 tile | 3 turns | **5** |
+| Pawn | Advance | Move forward 2 tiles (cannot use consecutively) | 1 turn | Unlimited |
+
+### Limited Use Notes
+
+- **Royal Decree (King)**: **3 charges** per match, each gives **+2 bonus for 2 turns**. More impactful than original +1/1-turn, usable strategically multiple times.
+- **Interpose (Rook)**: White: 5 uses, **Black: 6 uses**. Extra "vest" compensates for first-mover disadvantage. Prevents infinite defensive turtling.
+- **Consecration (Bishop)**: 3 uses per match. Encourages aggressive play rather than turtling with constant heals.
+- **Skirmish (Knight)**: 5 uses per match. Forces commitment to attacks rather than endless hit-and-run.
+- **Overextend (Queen)**: Unlimited but self-limits via 2 damage to self. Risk/reward tradeoff.
+
+### Ability Interactions
+
+- **Royal Decree + Consecration**: +2 to heal rolls while Royal Decree active
+- **Royal Decree + All Attacks**: +2 to damage rolls while active (lasts 2 turns)
+- **Interpose**: Can absorb damage from any adjacent ally, including during Skirmish

@@ -96,7 +96,7 @@ def main():
         "--resume",
         type=str,
         default=None,
-        help="Resume from checkpoint path (optional)"
+        help="Checkpoint path to load (optional)"
     )
     parser.add_argument(
         "--output-dir",
@@ -105,7 +105,12 @@ def main():
         help="Output directory (default: runs/experiment)"
     )
 
-    # MCTS settings
+    # Simulator modes
+    parser.add_argument(
+        "--rust",
+        action="store_true",
+        help="Enable Rust 1-ply evaluation (fastest, for 'easy' mode training)"
+    )
     parser.add_argument(
         "--mcts",
         action="store_true",
@@ -121,6 +126,108 @@ def main():
         type=int,
         default=100,
         help="MCTS simulations per move (default: 100)"
+    )
+
+    # Hybrid mode
+    parser.add_argument(
+        "--hybrid",
+        action="store_true",
+        help="Enable hybrid training: mix fast 1-ply with quality MCTS games"
+    )
+    parser.add_argument(
+        "--hybrid-ratio",
+        type=float,
+        default=0.2,
+        help="Fraction of games to use MCTS in hybrid mode (default: 0.2 = 20%%)"
+    )
+    parser.add_argument(
+        "--hybrid-sims",
+        type=int,
+        default=50,
+        help="MCTS simulations per move in hybrid mode (default: 50)"
+    )
+
+    # Asymmetric mode (teacher-student)
+    parser.add_argument(
+        "--asymmetric",
+        action="store_true",
+        help="Enable asymmetric training: MCTS (teacher) vs 1-ply (student) in same game"
+    )
+    parser.add_argument(
+        "--asymmetric-sims",
+        type=int,
+        default=50,
+        help="MCTS simulations for teacher side in asymmetric mode (default: 50)"
+    )
+
+    # MCTS exploration settings
+    parser.add_argument(
+        "--mcts-noise",
+        type=float,
+        default=0.5,
+        help="Dirichlet noise weight for MCTS (0-1, higher = more random, default: 0.5)"
+    )
+    parser.add_argument(
+        "--mcts-alpha",
+        type=float,
+        default=0.15,
+        help="Dirichlet alpha for MCTS (lower = spikier noise, default: 0.15)"
+    )
+    parser.add_argument(
+        "--no-noise-decay",
+        action="store_true",
+        help="Disable noise decay (keep noise constant throughout training)"
+    )
+    parser.add_argument(
+        "--noise-min",
+        type=float,
+        default=0.15,
+        help="Minimum noise epsilon after decay (default: 0.15)"
+    )
+    parser.add_argument(
+        "--noise-decay-iters",
+        type=int,
+        default=100,
+        help="Iterations to decay noise from --mcts-noise to --noise-min (default: 100)"
+    )
+
+    # Outcome values
+    parser.add_argument(
+        "--draw-penalty",
+        type=float,
+        default=0.8,
+        help="Draw penalty (default: 0.8)"
+    )
+    parser.add_argument(
+        "--loss-penalty",
+        type=float,
+        default=1.0,
+        help="Loss penalty (default: 1.0, symmetric with win)"
+    )
+    parser.add_argument(
+        "--repetition-penalty",
+        type=float,
+        default=0.10,
+        help="Boredom penalty per position repetition (default: 0.10)"
+    )
+
+    # Combo bonus for attacks during Royal Decree
+    parser.add_argument(
+        "--no-combo-bonus",
+        action="store_true",
+        help="Disable combo bonus for attacks during Royal Decree"
+    )
+    parser.add_argument(
+        "--combo-bonus-per-attack",
+        type=float,
+        default=0.05,
+        help="Bonus per combo attack during Royal Decree (default: 0.05)"
+    )
+    parser.add_argument(
+        "--combo-bonus-max",
+        type=float,
+        default=0.3,
+        help="Maximum combo bonus cap (default: 0.3)"
     )
 
     # Quick test mode
@@ -152,6 +259,26 @@ def main():
             checkpoint_interval=5,
             output_dir=args.output_dir,
             num_workers=args.workers,
+            # Hybrid mode (also available in quick test)
+            use_hybrid=args.hybrid,
+            hybrid_mcts_ratio=args.hybrid_ratio,
+            hybrid_mcts_simulations=args.hybrid_sims,
+            # Asymmetric mode (also available in quick test)
+            use_asymmetric=args.asymmetric,
+            asymmetric_mcts_simulations=args.asymmetric_sims,
+            # MCTS exploration (wire to quick mode too)
+            mcts_dirichlet_epsilon=args.mcts_noise,
+            mcts_dirichlet_alpha=args.mcts_alpha,
+            mcts_noise_decay=not args.no_noise_decay,
+            mcts_noise_min_epsilon=args.noise_min,
+            mcts_noise_decay_iterations=args.noise_decay_iters,
+            # Outcome values
+            draw_penalty=args.draw_penalty,
+            loss_penalty=args.loss_penalty,
+            # Combo bonus
+            combo_bonus_enabled=not args.no_combo_bonus,
+            combo_bonus_per_attack=args.combo_bonus_per_attack,
+            combo_bonus_max=args.combo_bonus_max,
         )
         print("\n*** QUICK TEST MODE ***\n")
     else:
@@ -164,10 +291,32 @@ def main():
             learning_rate=args.lr,
             output_dir=args.output_dir,
             num_workers=args.workers,
-            # MCTS settings
+            # Simulator mode
+            use_rust=args.rust,
             use_mcts=args.mcts,
             use_mcts_rust=args.mcts_rust,
             mcts_simulations=args.mcts_sims,
+            # Hybrid mode
+            use_hybrid=args.hybrid,
+            hybrid_mcts_ratio=args.hybrid_ratio,
+            hybrid_mcts_simulations=args.hybrid_sims,
+            # Asymmetric mode
+            use_asymmetric=args.asymmetric,
+            asymmetric_mcts_simulations=args.asymmetric_sims,
+            # MCTS exploration
+            mcts_dirichlet_epsilon=args.mcts_noise,
+            mcts_dirichlet_alpha=args.mcts_alpha,
+            mcts_noise_decay=not args.no_noise_decay,
+            mcts_noise_min_epsilon=args.noise_min,
+            mcts_noise_decay_iterations=args.noise_decay_iters,
+            # Outcome values
+            draw_penalty=args.draw_penalty,
+            loss_penalty=args.loss_penalty,
+            repetition_penalty=args.repetition_penalty,
+            # Combo bonus
+            combo_bonus_enabled=not args.no_combo_bonus,
+            combo_bonus_per_attack=args.combo_bonus_per_attack,
+            combo_bonus_max=args.combo_bonus_max,
         )
 
     print("=" * 60)
@@ -177,14 +326,38 @@ def main():
     print(f"Iterations: {config.num_iterations}")
     print(f"Games per iteration: {config.games_per_iteration}")
     print(f"Bootstrap games: {config.bootstrap_games}")
-    if config.use_mcts_rust:
-        print(f"MCTS: Rust (fast)")
+    # Helper to format noise info
+    def noise_info():
+        base = f"epsilon={config.mcts_dirichlet_epsilon:.2f}, alpha={config.mcts_dirichlet_alpha:.2f}"
+        if config.mcts_noise_decay:
+            return f"{base} (decays to {config.mcts_noise_min_epsilon:.2f} over {config.mcts_noise_decay_iterations} iters)"
+        return f"{base} (no decay)"
+
+    if config.use_asymmetric:
+        print(f"Mode: ASYMMETRIC (MCTS teacher vs 1-ply student)")
+        print(f"  MCTS simulations/move: {config.asymmetric_mcts_simulations}")
+        print(f"  MCTS noise: {noise_info()}")
+    elif config.use_hybrid:
+        oneply_pct = int((1 - config.hybrid_mcts_ratio) * 100)
+        mcts_pct = int(config.hybrid_mcts_ratio * 100)
+        print(f"Mode: HYBRID ({oneply_pct}% 1-ply + {mcts_pct}% MCTS)")
+        print(f"  MCTS simulations/move: {config.hybrid_mcts_simulations}")
+        print(f"  MCTS noise: {noise_info()}")
+    elif config.use_mcts_rust:
+        print(f"Mode: Rust MCTS (fast)")
         print(f"  Simulations/move: {config.mcts_simulations}")
+        print(f"  MCTS noise: {noise_info()}")
     elif config.use_mcts:
-        print(f"MCTS: Python")
+        print(f"Mode: Python MCTS")
         print(f"  Simulations/move: {config.mcts_simulations}")
+        print(f"  MCTS noise: {noise_info()}")
+    elif config.use_rust:
+        print(f"Mode: Rust 1-ply (fastest)")
     else:
-        print(f"MCTS: disabled (1-ply evaluation)")
+        print(f"Mode: Python batched 1-ply")
+    print(f"Outcomes: Win=+1.0, Loss=-{config.loss_penalty}, Draw=-{config.draw_penalty}")
+    if config.combo_bonus_enabled:
+        print(f"Combo bonus: +{config.combo_bonus_per_attack}/attack during Royal Decree (max: +{config.combo_bonus_max})")
     print(f"Output directory: {config.output_dir}")
     print("=" * 60)
 

@@ -33,14 +33,14 @@ class MCTSConfig:
     eval_simulations: int = 200  # Simulations per move during evaluation
 
     # PUCT formula parameters
-    c_puct: float = 1.5  # Exploration constant
+    c_puct: float = 3.0  # Exploration constant (higher = more exploration, was 1.5)
 
     # Root exploration noise (Dirichlet)
-    dirichlet_alpha: float = 0.3  # Concentration parameter
-    dirichlet_epsilon: float = 0.25  # Noise weight at root
+    dirichlet_alpha: float = 0.15  # Concentration parameter (lower = spikier, was 0.3)
+    dirichlet_epsilon: float = 0.5  # Noise weight at root (50%, was 0.25)
 
     # Move selection
-    temperature: float = 1.0  # Temperature for move selection
+    temperature: float = 2.0  # Temperature for move selection (higher = more random, was 1.0)
     temperature_threshold: int = 30  # Moves before going deterministic
 
 

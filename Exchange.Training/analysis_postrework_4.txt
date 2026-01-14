@@ -1,0 +1,292 @@
+Excluded 3 games with < 10 moves (outliers/errors).
+Filtered to iterations 0-2 (last 200): 300 of 300 games
+Loaded 300 games
+
+============================================================
+OVERALL STATISTICS
+============================================================
+White wins: 9 (3.0%)
+Black wins: 2 (0.7%)
+Draws: 289 (96.3%)
+
+============================================================
+DRAW CAUSE BREAKDOWN
+============================================================
+King vs King (insufficient material):     0 (  0.0%)
+30 moves without damage:                  0 (  0.0%)
+Threefold repetition:                   289 (100.0%)
+
+Game length: avg=40.7, min=30, max=203
+
+============================================================
+DAMAGE BY GAME PHASE
+============================================================
+EARLY  (20 moves avg):
+  White damage: 0.3 avg
+  Black damage: 0.4 avg
+  Difference: -0.1 (White advantage)
+
+MID    (15 moves avg):
+  White damage: 1.6 avg
+  Black damage: 1.7 avg
+  Difference: -0.1 (White advantage)
+
+LATE   (51 moves avg):
+  White damage: 31.0 avg
+  Black damage: 14.9 avg
+  Difference: +16.1 (White advantage)
+
+============================================================
+FIRST BLOOD (First damage dealt)
+============================================================
+White gets first blood: 17 (34.7%)
+Black gets first blood: 32 (65.3%)
+Average turn of first blood: 21.4
+
+============================================================
+WIN RATE BY FIRST BLOOD
+============================================================
+White gets first blood -> White wins: 50.0%
+Black gets first blood -> Black wins: 11.1%
+
+============================================================
+DAMAGE BY PIECE TYPE
+============================================================
+King    :    22 attacks,    103 total damage, 4.7 avg/attack
+          White:   15 attacks (   74 dmg)  Black:    7 attacks (   29 dmg)
+Queen   :    65 attacks,    420 total damage, 6.5 avg/attack
+          White:   35 attacks (  223 dmg)  Black:   30 attacks (  197 dmg)
+Rook    :   303 attacks,   1646 total damage, 5.4 avg/attack
+          White:  190 attacks ( 1028 dmg)  Black:  113 attacks (  618 dmg)
+Bishop  :    32 attacks,    177 total damage, 5.5 avg/attack
+          White:   30 attacks (  163 dmg)  Black:    2 attacks (   14 dmg)
+Knight  :    80 attacks,    477 total damage, 6.0 avg/attack
+          White:   31 attacks (  184 dmg)  Black:   49 attacks (  293 dmg)
+
+============================================================
+MOVE TYPES (0=Move, 1=Attack, 2=MoveAttack, 3=Ability)
+============================================================
+Move      :  10220 total ( 4856 W,  5364 B) | Damage:      0 (    0 W,     0 B)
+Attack    :    391 total (  257 W,   134 B) | Damage:   2148 ( 1407 W,   741 B)
+MoveAttack:     55 total (   22 W,    33 B) | Damage:    330 (  127 W,   203 B)
+Ability   :   1538 total (  980 W,   558 B) | Damage:    345 (  138 W,   207 B)
+
+============================================================
+ABILITY USAGE
+============================================================
+RoyalDecree :    88 uses (  32 W,   56 B) | Damage:     0
+Overextend  :    31 uses (  13 W,   18 B) | Damage:   198
+Interpose   :  1315 uses ( 896 W,  419 B) | Damage:     0
+Consecration:     4 uses (   3 W,    1 B) | Damage:     0
+Skirmish    :    25 uses (   9 W,   16 B) | Damage:   147
+Advance     :    75 uses (  27 W,   48 B) | Damage:     0
+
+============================================================
+TRENDS OVER TRAINING (every 10 iterations)
+============================================================
+  Iter | Games | W Win% | B Win% |  Draw% |   W Dmg |   B Dmg |     Gap
+------------------------------------------------------------------------
+     0 |   300 |   3.0% |   0.7% |  96.3% |     5.6 |     3.8 |    +1.7
+
+============================================================
+DETAILED PROGRESSION OVER TRAINING
+============================================================
+
+GAME LENGTH PROGRESSION:
+  Iter |  Avg Len |   Min |   Max | Decisive%
+---------------------------------------------
+     0 |     40.7 |    30 |   203 |      3.7%
+
+EARLY GAME DAMAGE PROGRESSION (first 20 moves):
+  Iter |   W Dmg |   B Dmg |     Gap | W Adv?
+--------------------------------------------------
+     0 |     0.3 |     0.4 |    -0.1 |      =
+
+MID GAME DAMAGE PROGRESSION (moves 20-60):
+  Iter |   W Dmg |   B Dmg |     Gap | W Adv?
+--------------------------------------------------
+     0 |     1.6 |     1.7 |    -0.1 |      =
+
+LATE GAME DAMAGE PROGRESSION (moves 60+):
+  Iter |   W Dmg |   B Dmg |     Gap | W Adv?
+--------------------------------------------------
+     0 |     3.7 |     1.8 |    +1.9 |      =
+
+FIRST BLOOD PROGRESSION:
+  Iter |   W FB% |   B FB% | Avg Turn
+----------------------------------------
+     0 |   34.7% |   65.3% |     21.4
+
+PIECE ATTACK DISTRIBUTION OVER TIME (% of total attacks):
+  Iter |   King |  Queen |   Rook | Bishop | Knight |   Pawn
+------------------------------------------------------------
+     0 |   4.4% |  12.9% |  60.4% |   6.4% |  15.9% |   0.0%
+
+ABILITY USAGE OVER TIME (uses per game):
+  Iter |  RoyalD |  OverEx |  Interp |  Consec |   Skirm |  Advanc
+-----------------------------------------------------------------
+     0 |    0.29 |    0.10 |    4.38 |    0.01 |    0.08 |    0.25
+
+AGGRESSION INDEX (% of moves that deal damage):
+  Iter |   Aggr% |  Dmg Moves |  Total Moves |  Dmg/Game
+-------------------------------------------------------
+     0 |    4.1% |        502 |        12204 |       9.4
+
+DAMAGE EFFICIENCY (avg damage per damaging move):
+  Iter |  Dmg/Hit |  Total Dmg |     Hits |  BigHits |   Big%
+--------------------------------------------------------------
+(BigHits = hits dealing 10+ damage, typically ability-boosted)
+     0 |     5.62 |       2823 |      502 |      0.0 |   0.0%
+
+FIRST BLOOD CONVERSION (FB team win rate in decisive games):
+  Iter |  FB->Win |  FB->Lose |   Conv% |  Advantage
+-------------------------------------------------------
+     0 |        2 |         9 |   18.2% |     -31.8%
+
+MOVE TYPE DISTRIBUTION OVER TIME (% of total moves):
+  Iter |   Move% |  Attack% |  MoveAtk% |  Ability%
+----------------------------------------------------
+     0 |   83.7% |     3.2% |      0.5% |     12.6%
+
+DAMAGE OUTPUT BY PIECE TYPE OVER TIME (% of total damage):
+  Iter |   King |  Queen |   Rook | Bishop | Knight |   Pawn
+------------------------------------------------------------
+     0 |   3.6% |  14.9% |  58.3% |   6.3% |  16.9% |   0.0%
+
+OPENING SPEED (turns until first damage):
+  Iter |  Avg Turn |   Min |   Max |  Std Dev
+---------------------------------------------
+     0 |      21.4 |    11 |    29 |      6.4
+
+======================================================================
+DRAW CAUSE PROGRESSION
+======================================================================
+
+(Shows percentage breakdown of draw causes per iteration bucket)
+  Iter |  Draws |  Draw% |   K vs K |  No Dmg 30 |  Threefold
+-----------------------------------------------------------------
+     0 |    289 |  96.3% |     0.0% |       0.0% |     100.0%
+
+======================================================================
+CONSECRATION (Bishop Heal) ANALYSIS
+======================================================================
+
+CONSECRATION USAGE BY GAME PHASE:
+  Iter |  Total |   Early |     Mid |    Late |  Avg Turn |  Avg Dist
+----------------------------------------------------------------------
+     0 |      4 |    0.0% |  100.0% |    0.0% |      37.2 |      2.00
+
+CONSECRATION HEAL DISTANCE DISTRIBUTION (Manhattan distance to target):
+  Iter |  Dist 1 |  Dist 2 |  Dist 3 | Dist 4+
+---------------------------------------------
+     0 |    0.0% |  100.0% |    0.0% |    0.0%
+
+======================================================================
+ROYAL DECREE (King) ANALYSIS
+======================================================================
+
+ROYAL DECREE USAGE BY GAME PHASE:
+  Iter |  Total |   Early |     Mid |    Late |  Avg Turn
+------------------------------------------------------------
+     0 |     88 |   50.0% |   40.9% |    9.1% |      28.2
+
+ROYAL DECREE EVAL CONTEXT (value at time of use):
+(Positive = winning, Negative = losing)
+  Iter |  Avg Val |  Winning |   Losing |  Neutral |     Min |     Max
+----------------------------------------------------------------------
+
+======================================================================
+OVEREXTEND (Queen) ANALYSIS
+======================================================================
+
+OVEREXTEND USAGE BY GAME PHASE:
+  Iter |  Total |   Early |     Mid |    Late |  Avg Turn |  Avg Dmg
+----------------------------------------------------------------------
+     0 |     31 |   12.9% |   41.9% |   45.2% |      58.9 |      6.4
+
+OVEREXTEND EVAL CONTEXT (value at time of use):
+  Iter |  Avg Val |  Winning |   Losing |  Neutral
+-------------------------------------------------------
+
+======================================================================
+INTERPOSE (Rook) ANALYSIS
+======================================================================
+
+INTERPOSE USAGE BY GAME PHASE:
+  Iter |  Total |   Early |     Mid |    Late |  Avg Turn
+------------------------------------------------------------
+     0 |   1315 |   76.5% |   21.4% |    2.1% |      11.6
+
+INTERPOSE EVAL CONTEXT (value at time of use):
+  Iter |  Avg Val |  Winning |   Losing |  Neutral
+-------------------------------------------------------
+
+======================================================================
+SKIRMISH (Knight) ANALYSIS
+======================================================================
+
+SKIRMISH USAGE BY GAME PHASE:
+  Iter |  Total |   Early |     Mid |    Late |  Avg Turn |  Avg Dmg
+----------------------------------------------------------------------
+     0 |     25 |   12.0% |   44.0% |   44.0% |      58.3 |      5.9
+
+SKIRMISH EVAL CONTEXT (value at time of use):
+  Iter |  Avg Val |  Winning |   Losing |  Neutral
+-------------------------------------------------------
+
+======================================================================
+ADVANCE (Pawn) ANALYSIS
+======================================================================
+
+ADVANCE USAGE BY GAME PHASE:
+  Iter |  Total |   Early |     Mid |    Late |  Avg Turn
+------------------------------------------------------------
+     0 |     75 |   48.0% |   38.7% |   13.3% |      32.3
+
+ADVANCE EVAL CONTEXT (value at time of use):
+  Iter |  Avg Val |  Winning |   Losing |  Neutral
+-------------------------------------------------------
+
+======================================================================
+INTERPOSE EFFECTIVENESS (Rook damage absorption)
+======================================================================
+
+(Tracks how much damage Rook absorbed when protecting adjacent allies)
+  Iter | Activations | Effective |   Eff% | Dmg Blocked | Avg Block
+----------------------------------------------------------------------
+     0 |        1315 |         0 |   0.0% |           0 |       0.0
+
+======================================================================
+CONSECRATION EFFECTIVENESS (Bishop healing)
+======================================================================
+
+(Tracks healing provided by Bishop ability)
+  Iter |   Uses | Total Heal | Avg Heal |   Min |   Max
+------------------------------------------------------------
+
+======================================================================
+PAWN PROMOTIONS
+======================================================================
+
+(Tracks pawn promotions to Queen)
+  Iter |  White |  Black |  Total |  Per Game
+--------------------------------------------------
+     0 |      0 |      0 |      0 |      0.00
+
+================================================================================
+ROYAL DECREE COMBO EFFECTIVENESS (Gemini Analysis)
+================================================================================
+
+Tracks whether the AI uses attacks while Royal Decree is active.
+Buff Utilization = (Attacks while buffed) / (Turns buffed)
+Damage Delta = (Avg damage while buffed) - (Avg damage unbuffed)
+Target: Utilization >50%, Delta ~+2.0
+
+  Iter | Buff Turns | Buffed Atk |   Util% | Avg Buff | Avg Unbuff |   Delta
+--------------------------------------------------------------------------------
+     0 |        162 |          2 |    1.2% |     7.00 |       5.62 |   +1.38
+
+Interpretation:
+- Util% < 20%: AI wastes Royal Decree (activates then doesn't attack)
+- Delta near 0: Damage bonus may not be applying correctly
+- Delta ~2.0: Buff is working as expected

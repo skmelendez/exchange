@@ -49,6 +49,12 @@ public abstract partial class BasePiece : Node2D
     /// <summary>For once-per-match abilities: whether it has been used.</summary>
     public bool AbilityUsedThisMatch { get; set; }
 
+    /// <summary>Maximum uses for this ability (0 = unlimited).</summary>
+    public int AbilityMaxUses { get; protected set; }
+
+    /// <summary>Remaining uses for this ability (-1 = unlimited).</summary>
+    public int AbilityUsesRemaining { get; set; }
+
     /// <summary>Whether this piece moved into a threat zone this turn (-1 dice penalty).</summary>
     public bool EnteredThreatZoneThisTurn { get; set; }
 
@@ -68,8 +74,14 @@ public abstract partial class BasePiece : Node2D
     private const float ShakeAmount = 4f;
 
     public bool IsAlive => CurrentHp > 0;
-    public bool CanUseAbility => AbilityCooldownCurrent == 0 &&
-        (AbilityCooldownMax != -1 || !AbilityUsedThisMatch);
+
+    /// <summary>
+    /// Whether this piece can currently use its ability.
+    /// Checks cooldown and remaining uses.
+    /// </summary>
+    public bool CanUseAbility =>
+        AbilityCooldownCurrent <= 0 &&
+        (AbilityUsesRemaining == -1 || AbilityUsesRemaining > 0);
 
     protected BasePiece(PieceType type, Team team)
     {
@@ -82,6 +94,24 @@ public abstract partial class BasePiece : Node2D
         BaseDamage = stats.BaseDamage;
         AbilityId = stats.Ability;
         AbilityCooldownMax = stats.AbilityCooldown;
+        AbilityMaxUses = stats.AbilityMaxUses;
+
+        // Initialize ability uses remaining
+        // 0 means unlimited (-1 internally), >0 means limited uses
+        if (AbilityMaxUses == 0)
+        {
+            AbilityUsesRemaining = -1; // Unlimited
+        }
+        else
+        {
+            AbilityUsesRemaining = AbilityMaxUses;
+
+            // Asymmetric balancing: Black Rook gets +1 Interpose to compensate for first-mover disadvantage
+            if (type == PieceType.Rook && team == Team.Enemy)
+            {
+                AbilityUsesRemaining += 1;
+            }
+        }
     }
 
     public override void _Ready()
@@ -263,6 +293,10 @@ public abstract partial class BasePiece : Node2D
             AbilityUsedThisMatch = true;
         else
             AbilityCooldownCurrent = AbilityCooldownMax;
+
+        // Decrement uses remaining for limited-use abilities
+        if (AbilityUsesRemaining > 0)
+            AbilityUsesRemaining--;
     }
 
     public void ResetForNewMatch()
@@ -272,6 +306,22 @@ public abstract partial class BasePiece : Node2D
         AbilityUsedThisMatch = false;
         EnteredThreatZoneThisTurn = false;
         HasActedThisTurn = false;
+
+        // Reset ability uses
+        if (AbilityMaxUses == 0)
+        {
+            AbilityUsesRemaining = -1; // Unlimited
+        }
+        else
+        {
+            AbilityUsesRemaining = AbilityMaxUses;
+            // Asymmetric balancing: Black Rook gets +1 Interpose
+            if (PieceType == PieceType.Rook && Team == Team.Enemy)
+            {
+                AbilityUsesRemaining += 1;
+            }
+        }
+
         UpdateHpDisplay();
     }
 

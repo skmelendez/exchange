@@ -30,11 +30,19 @@ public partial class GameState : Node
     public bool PlayerKingThreatened { get; set; } = false;
     public bool EnemyKingThreatened { get; set; } = false;
 
-    // Royal Decree tracking
-    public bool PlayerRoyalDecreeActive { get; set; } = false;
-    public bool EnemyRoyalDecreeActive { get; set; } = false;
-    public bool PlayerRoyalDecreeUsed { get; set; } = false;
-    public bool EnemyRoyalDecreeUsed { get; set; } = false;
+    // Royal Decree tracking (+2 bonus, lasts N turns, 3 charges per match)
+    public int PlayerRoyalDecreeTurns { get; set; } = 0;  // Turns remaining
+    public int EnemyRoyalDecreeTurns { get; set; } = 0;
+
+    /// <summary>
+    /// Gets the Royal Decree bonus for a team (+2 if active, 0 otherwise).
+    /// </summary>
+    public int GetRoyalDecreeBonus(Team team)
+    {
+        return team == Team.Player
+            ? (PlayerRoyalDecreeTurns > 0 ? 2 : 0)
+            : (EnemyRoyalDecreeTurns > 0 ? 2 : 0);
+    }
 
     public MatchType GetMatchType() => CurrentMatch switch
     {
@@ -63,10 +71,8 @@ public partial class GameState : Node
         EnemyDiceModifier = 0;
         PlayerKingThreatened = false;
         EnemyKingThreatened = false;
-        PlayerRoyalDecreeActive = false;
-        EnemyRoyalDecreeActive = false;
-        PlayerRoyalDecreeUsed = false;
-        EnemyRoyalDecreeUsed = false;
+        PlayerRoyalDecreeTurns = 0;
+        EnemyRoyalDecreeTurns = 0;
     }
 
     /// <summary>

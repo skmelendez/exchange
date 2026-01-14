@@ -14,6 +14,9 @@ pyo3 = { version = "0.22", features = ["extension-module"] }
 fastrand = "2.0"
 numpy = "0.22"
 ndarray = "0.16"
+rayon = "1.10"
+ort = { version = "2.0.0-rc.9", features = ["coreml"] }
+half = { version = "2.4", features = ["num-traits"] }
 
 [profile.release]
 lto = true

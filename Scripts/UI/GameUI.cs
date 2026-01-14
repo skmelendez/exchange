@@ -145,10 +145,39 @@ public partial class GameUI : CanvasLayer
         AddStatLabel($"Base Damage: {piece.BaseDamage}");
         AddStatLabel($"Ability: {piece.AbilityId}");
 
-        string cooldownText = piece.AbilityCooldownMax == -1
-            ? (piece.AbilityUsedThisMatch ? "Used" : "Ready (once)")
-            : (piece.AbilityCooldownCurrent > 0 ? $"Cooldown: {piece.AbilityCooldownCurrent}" : "Ready");
-        AddStatLabel($"Ability Status: {cooldownText}");
+        // Build ability status string
+        string cooldownText;
+        if (piece.AbilityCooldownMax == -1)
+        {
+            cooldownText = piece.AbilityUsedThisMatch ? "Used" : "Ready (once)";
+        }
+        else if (piece.AbilityCooldownCurrent > 0)
+        {
+            cooldownText = $"Cooldown: {piece.AbilityCooldownCurrent}";
+        }
+        else
+        {
+            cooldownText = "Ready";
+        }
+
+        // Show remaining charges for limited-use abilities
+        if (piece.AbilityUsesRemaining == -1)
+        {
+            // Unlimited ability
+            AddStatLabel($"Ability Status: {cooldownText}");
+        }
+        else if (piece.AbilityUsesRemaining == 0)
+        {
+            // No charges left
+            AddStatLabel($"Ability Status: No charges left", Colors.Gray);
+        }
+        else
+        {
+            // Has charges remaining
+            var chargeColor = piece.AbilityUsesRemaining <= 1 ? Colors.OrangeRed : Colors.Cyan;
+            AddStatLabel($"Ability Status: {cooldownText}");
+            AddStatLabel($"Charges: {piece.AbilityUsesRemaining} remaining", chargeColor);
+        }
 
         if (piece.EnteredThreatZoneThisTurn)
             AddStatLabel("!! Entered Threat Zone (-1 dice)", Colors.OrangeRed);

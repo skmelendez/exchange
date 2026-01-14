@@ -221,6 +221,13 @@ Then open http://localhost:6006 in your browser.
 | `Games/black_wins` | Black win percentage |
 | `Games/draws` | Draw percentage |
 | `Temperature` | Current exploration temperature |
+| `Abilities/rd_activations` | Royal Decree activations |
+| `Abilities/rd_combo_attacks` | Attacks during Royal Decree |
+| `Abilities/interpose_triggers` | Reactive Interpose triggers |
+| `Abilities/consecration_uses` | Bishop heal uses |
+| `Abilities/pawn_promotions` | Pawns promoted to Queen |
+| `Rewards/king_hunt_bonus` | King proximity/attack bonuses |
+| `Rewards/shuffle_penalty` | Accumulated no-damage penalties |
 
 ---
 
@@ -332,6 +339,9 @@ python scripts/train.py --resume runs/old_experiment/checkpoints/best.pt --outpu
 | `--resume` | - | Path to checkpoint to resume from |
 | `--output-dir` | `runs/experiment` | Output directory |
 | `--export-onnx` | - | Export to ONNX after training |
+| `--use-new-rewards` | `True` | Use new reward system with ability tracking |
+| `--asymmetric` | - | Enable asymmetric training (MCTS vs Network) |
+| `--asymmetric-sims` | `50` | MCTS simulations for asymmetric mode |
 
 ### `src.dashboard`
 

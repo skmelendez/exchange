@@ -96,11 +96,11 @@ public partial class TurnController : Node
             piece.UsedAdvanceLastTurn = false;
         }
 
-        // Clear Royal Decree at start of the team's turn (it lasts until their next turn)
-        if (_gameState.CurrentTeam == Team.Player)
-            _gameState.PlayerRoyalDecreeActive = false;
-        else
-            _gameState.EnemyRoyalDecreeActive = false;
+        // Decrement Royal Decree turns at start of the team's turn
+        if (_gameState.CurrentTeam == Team.Player && _gameState.PlayerRoyalDecreeTurns > 0)
+            _gameState.PlayerRoyalDecreeTurns--;
+        else if (_gameState.CurrentTeam == Team.Enemy && _gameState.EnemyRoyalDecreeTurns > 0)
+            _gameState.EnemyRoyalDecreeTurns--;
 
         // Apply Boss Rules
         ApplyBossRulesForTurn();
@@ -465,12 +465,13 @@ public partial class TurnController : Node
 
     private void ExecuteRoyalDecree(BasePiece king)
     {
+        // Royal Decree: +2 to all allied rolls for 2 turns (3 charges per match)
         if (king.Team == Team.Player)
-            _gameState.PlayerRoyalDecreeActive = true;
+            _gameState.PlayerRoyalDecreeTurns = 2;
         else
-            _gameState.EnemyRoyalDecreeActive = true;
+            _gameState.EnemyRoyalDecreeTurns = 2;
 
-        GameLogger.Debug("Ability", $"Royal Decree activated! All {king.Team} combat rolls +1 until next turn.");
+        GameLogger.Debug("Ability", $"Royal Decree activated! All {king.Team} combat rolls +2 for 2 turns. (Charges left: {king.AbilityUsesRemaining})");
     }
 
     private void ExecuteInterpose(RookPiece? rook)

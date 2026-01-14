@@ -63,6 +63,10 @@ class RustGameSimulator:
         """Set random seed for reproducibility."""
         self._sim.set_seed(seed)
 
+    def set_playing_as(self, team: int) -> None:
+        """Set which team we're playing as (0=White, 1=Black)."""
+        self._sim.set_playing_as(team)
+
     def clone(self) -> RustGameSimulator:
         """Clone the simulator (for MCTS tree exploration)."""
         new_sim = RustGameSimulator.__new__(RustGameSimulator)

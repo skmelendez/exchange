@@ -40,11 +40,11 @@ class Team(IntEnum):
 
 class AbilityId(IntEnum):
     """Ability IDs matching C# enum order."""
-    ROYAL_DECREE = 0   # King: Once per match, all allied rolls +1 until next turn
+    ROYAL_DECREE = 0   # King: +2 to all allied rolls for 2 turns (3 charges per match)
     OVEREXTEND = 1     # Queen: Move then attack, take 2 self-damage (3 turn CD)
-    INTERPOSE = 2      # Rook: Damage to adjacent allies split with Rook (3 turn CD)
-    CONSECRATION = 3   # Bishop: Heal diagonal ally 1d6 HP (3 turn CD)
-    SKIRMISH = 4       # Knight: Attack then reposition 1 tile (3 turn CD)
+    INTERPOSE = 2      # Rook: Damage to adjacent allies split with Rook (3 turn CD, 5 uses)
+    CONSECRATION = 3   # Bishop: Heal diagonal ally 1d6 HP (3 turn CD, 3 uses)
+    SKIRMISH = 4       # Knight: Attack then reposition 1 tile (3 turn CD, 5 uses)
     ADVANCE = 5        # Pawn: Move forward extra tile (1 turn CD)
 
 
@@ -60,13 +60,14 @@ PIECE_ABILITIES = {
 
 
 # Piece stats from PieceData.cs
+# ability_max_uses: 0 = unlimited (cooldown only), N = limited uses per match
 PIECE_STATS = {
-    PieceType.KING:   {"max_hp": 25, "base_damage": 1, "cooldown_max": -1},  # -1 = once per match
-    PieceType.QUEEN:  {"max_hp": 10, "base_damage": 3, "cooldown_max": 3},
-    PieceType.ROOK:   {"max_hp": 13, "base_damage": 2, "cooldown_max": 3},
-    PieceType.BISHOP: {"max_hp": 10, "base_damage": 2, "cooldown_max": 3},
-    PieceType.KNIGHT: {"max_hp": 11, "base_damage": 2, "cooldown_max": 3},
-    PieceType.PAWN:   {"max_hp":  7, "base_damage": 1, "cooldown_max": 1},
+    PieceType.KING:   {"max_hp": 25, "base_damage": 1, "cooldown_max": 0,  "ability_max_uses": 3},  # 3 charges, 0 CD between uses
+    PieceType.QUEEN:  {"max_hp": 10, "base_damage": 3, "cooldown_max": 3,  "ability_max_uses": 0},
+    PieceType.ROOK:   {"max_hp": 13, "base_damage": 2, "cooldown_max": 3,  "ability_max_uses": 5},
+    PieceType.BISHOP: {"max_hp": 10, "base_damage": 2, "cooldown_max": 3,  "ability_max_uses": 3},
+    PieceType.KNIGHT: {"max_hp": 11, "base_damage": 2, "cooldown_max": 3,  "ability_max_uses": 5},
+    PieceType.PAWN:   {"max_hp":  7, "base_damage": 1, "cooldown_max": 1,  "ability_max_uses": 0},
 }
 
 
@@ -81,7 +82,8 @@ class Piece:
     max_hp: int
     base_damage: int
     ability_cooldown: int = 0
-    ability_used_this_match: bool = False  # For once-per-match abilities
+    ability_used_this_match: bool = False  # For once-per-match abilities (King)
+    ability_uses_remaining: int = -1  # -1 = unlimited, 0+ = uses left (Bishop: 3, Knight: 5)
     interpose_active: bool = False  # Rook special
     was_pawn: bool = False  # Track promoted pieces
     advance_cooldown_turns: int = 0  # Pawn: cannot use Advance consecutively (counts down each turn)
@@ -90,6 +92,9 @@ class Piece:
     def create(cls, piece_type: PieceType, team: Team, x: int, y: int) -> Piece:
         """Create a piece with default stats."""
         stats = PIECE_STATS[piece_type]
+        # ability_max_uses: 0 = unlimited (use -1 internally), N = limited uses
+        max_uses = stats.get("ability_max_uses", 0)
+        uses_remaining = -1 if max_uses == 0 else max_uses
         return cls(
             piece_type=piece_type,
             team=team,
@@ -98,6 +103,7 @@ class Piece:
             current_hp=stats["max_hp"],
             max_hp=stats["max_hp"],
             base_damage=stats["base_damage"],
+            ability_uses_remaining=uses_remaining,
         )
 
     @property
@@ -106,10 +112,13 @@ class Piece:
 
     @property
     def can_use_ability(self) -> bool:
-        stats = PIECE_STATS[self.piece_type]
-        if stats["cooldown_max"] == -1:  # Once per match
-            return not self.ability_used_this_match
-        return self.ability_cooldown == 0
+        # Check uses remaining first (0 = no charges left)
+        if self.ability_uses_remaining == 0:
+            return False
+        # Check cooldown (if not unlimited/-1)
+        if self.ability_cooldown > 0:
+            return False
+        return True
 
     def clone(self) -> Piece:
         """Deep copy of this piece."""
@@ -123,6 +132,7 @@ class Piece:
             base_damage=self.base_damage,
             ability_cooldown=self.ability_cooldown,
             ability_used_this_match=self.ability_used_this_match,
+            ability_uses_remaining=self.ability_uses_remaining,
             interpose_active=self.interpose_active,
             was_pawn=self.was_pawn,
             advance_cooldown_turns=self.advance_cooldown_turns,
@@ -130,7 +140,8 @@ class Piece:
 
 
 # Draw condition constants
-DRAW_MOVES_WITHOUT_DAMAGE = 30  # Draw if no damage dealt in 30 moves
+# NOTE: 30-move no-damage draw rule REMOVED - was being exploited by AI for passive play
+# Only insufficient material and threefold repetition trigger draws now
 DRAW_REPETITION_COUNT = 3  # Draw if same position occurs 3 times
 
 
@@ -143,9 +154,11 @@ class GameState:
     """
     pieces: list[Piece] = field(default_factory=list)
     side_to_move: Team = Team.PLAYER
-    royal_decree_active: Team | None = None  # Which team has buff active
+    # Royal Decree: +2 bonus for N turns remaining (0 = inactive)
+    player_royal_decree_turns: int = 0
+    enemy_royal_decree_turns: int = 0
     turn_number: int = 0
-    moves_without_damage: int = 0  # Counter for 30-move draw rule
+    moves_without_damage: int = 0  # Counter for shuffle penalty (no longer triggers draw)
     position_history: list[int] = field(default_factory=list)  # For threefold repetition
 
     # Color awareness - which side the network is "playing as" for the whole game
@@ -156,6 +169,14 @@ class GameState:
     winner: Team | None = None
     is_terminal: bool = False
     is_draw: bool = False  # True if game ended in draw
+
+    def get_royal_decree_bonus(self, team: Team) -> int:
+        """Get Royal Decree bonus (+2 if active, 0 otherwise)."""
+        if team == Team.PLAYER and self.player_royal_decree_turns > 0:
+            return 2
+        elif team == Team.ENEMY and self.enemy_royal_decree_turns > 0:
+            return 2
+        return 0
 
     def position_hash(self) -> int:
         """
@@ -175,7 +196,8 @@ class GameState:
         return GameState(
             pieces=[p.clone() for p in self.pieces],
             side_to_move=self.side_to_move,
-            royal_decree_active=self.royal_decree_active,
+            player_royal_decree_turns=self.player_royal_decree_turns,
+            enemy_royal_decree_turns=self.enemy_royal_decree_turns,
             turn_number=self.turn_number,
             moves_without_damage=self.moves_without_damage,
             position_history=self.position_history.copy() if copy_history else [],
@@ -239,14 +261,7 @@ class GameState:
             self.winner = None
             return
 
-        # Draw condition 2: 30 moves without damage
-        if self.moves_without_damage >= DRAW_MOVES_WITHOUT_DAMAGE:
-            self.is_terminal = True
-            self.is_draw = True
-            self.winner = None
-            return
-
-        # Draw condition 3: Threefold repetition
+        # Draw condition 2: Threefold repetition
         if self.is_threefold_repetition():
             self.is_terminal = True
             self.is_draw = True
@@ -325,7 +340,7 @@ class GameState:
         Returns:
             numpy array of shape (C, 8, 8) where C is the number of channels.
 
-        Channel Layout (58 total):
+        Channel Layout (62 total):
             0-5:   White piece positions (King, Queen, Rook, Bishop, Knight, Pawn)
             6-11:  Black piece positions
             12-17: HP planes (normalized by max HP)
@@ -368,14 +383,33 @@ class GameState:
             55:    Passed pawns black
             56:    Open files (no pawns - rook highways)
             57:    Damage potential map (attacker damage sum per square)
+
+            === ABILITY TRACKING CHANNELS ===
+            58:    Ability charges remaining (per-piece, normalized by max uses)
+            59:    Royal Decree turns remaining (normalized: 0, 0.5, 1.0 for 0, 1, 2)
+            60:    RD combo potential (pieces that can attack while RD active)
+            61:    Promoted pieces (Queens that were pawns - can heal via Consecration!)
         """
         tensor = np.zeros((INPUT_CHANNELS, 8, 8), dtype=np.float32)
 
         # Collect piece info
         white_pieces = self.get_pieces(Team.PLAYER)
         black_pieces = self.get_pieces(Team.ENEMY)
+        alive_pieces = white_pieces + black_pieces  # All living pieces
         white_king = self.get_king(Team.PLAYER)
         black_king = self.get_king(Team.ENEMY)
+
+        # Perspective-based references (for new channels)
+        if self.side_to_move == Team.PLAYER:
+            player_pieces = white_pieces
+            enemy_pieces = black_pieces
+            player_king = white_king
+            enemy_king = black_king
+        else:
+            player_pieces = black_pieces
+            enemy_pieces = white_pieces
+            player_king = black_king
+            enemy_king = white_king
 
         # === ORIGINAL CHANNELS (0-27) ===
         for piece in self.pieces:
@@ -405,8 +439,8 @@ class GameState:
             if piece.interpose_active:
                 tensor[25, y, x] = 1.0
 
-        # Royal Decree plane
-        if self.royal_decree_active == self.side_to_move:
+        # Royal Decree plane (active for side to move)
+        if self.get_royal_decree_bonus(self.side_to_move) > 0:
             tensor[24, :, :] = 1.0
 
         # Side to move plane
@@ -474,6 +508,10 @@ class GameState:
             tensor[34, ay, ax] = 1.0
         for ax, ay in black_attacks:
             tensor[35, ay, ax] = 1.0
+
+        # Create attack map numpy arrays for use in later channels
+        white_attack_map = tensor[34]  # Reference to channel 34
+        black_attack_map = tensor[35]  # Reference to channel 35
 
         # 36: Contested squares (both sides attack)
         contested = white_attacks & black_attacks
@@ -671,6 +709,208 @@ class GameState:
                 tensor[57, ay, ax] -= p.base_damage / 10.0  # Negative for black
         tensor[57] = (tensor[57] + 1) / 2  # Normalize to 0-1
 
+        # === ABILITY TRACKING CHANNELS (58-60) ===
+
+        # 58: Ability charges remaining (per-piece, normalized by max uses)
+        # For pieces with limited uses, show remaining / max
+        # For unlimited (-1), show 1.0 (always available)
+        for piece in self.pieces:
+            if not piece.is_alive:
+                continue
+            x, y = piece.x, piece.y
+            stats = PIECE_STATS[piece.piece_type]
+            max_uses = stats.get("ability_max_uses", 0)
+            if max_uses == 0:
+                # Unlimited ability - always show as "full"
+                tensor[58, y, x] = 1.0
+            elif piece.ability_uses_remaining >= 0:
+                # Limited uses - normalize by max
+                tensor[58, y, x] = piece.ability_uses_remaining / max_uses
+
+        # 59: Royal Decree turns remaining (normalized: 0, 0.5, 1.0 for 0, 1, 2)
+        # Shows for both sides, at all positions (global awareness)
+        rd_turns_white = self.player_royal_decree_turns
+        rd_turns_black = self.enemy_royal_decree_turns
+        # Side to move's RD turns
+        if self.side_to_move == Team.PLAYER:
+            tensor[59, :, :] = rd_turns_white / 2.0
+        else:
+            tensor[59, :, :] = rd_turns_black / 2.0
+
+        # 60: RD combo potential (pieces that can attack while RD active)
+        # Marks squares containing pieces that can attack AND RD is active for their team
+        # This helps the network identify attack opportunities during RD window
+        if rd_turns_white > 0:
+            for p in white_pieces:
+                # Check if this piece has attack targets
+                attacks = white_piece_attacks.get(id(p), set())
+                enemy_targets = [(ax, ay) for (ax, ay) in attacks
+                                if self.get_piece_at(ax, ay) and self.get_piece_at(ax, ay).team == Team.ENEMY]
+                if enemy_targets:
+                    tensor[60, p.y, p.x] = 1.0
+        if rd_turns_black > 0:
+            for p in black_pieces:
+                attacks = black_piece_attacks.get(id(p), set())
+                enemy_targets = [(ax, ay) for (ax, ay) in attacks
+                                if self.get_piece_at(ax, ay) and self.get_piece_at(ax, ay).team == Team.PLAYER]
+                if enemy_targets:
+                    tensor[60, p.y, p.x] = 1.0
+
+        # 61: Promoted pieces (Queens that were pawns)
+        # These are strategic targets - promoted Queens can be healed by Bishop!
+        for piece in self.pieces:
+            if not piece.is_alive:
+                continue
+            if piece.was_pawn:
+                tensor[61, piece.y, piece.x] = 1.0
+
+        # ====================================================================
+        # NEW TACTICAL/STRATEGIC CHANNELS (62-74)
+        # ====================================================================
+
+        # Channel 62-63: Threat map - which pieces can be attacked next turn
+        for piece in alive_pieces:
+            sq = piece.y * 8 + piece.x
+            if piece.team == Team.PLAYER:
+                # White piece - check if black can attack it
+                if black_attack_map[piece.y, piece.x] > 0:
+                    tensor[62, piece.y, piece.x] = 1.0
+            else:
+                # Black piece - check if white can attack it
+                if white_attack_map[piece.y, piece.x] > 0:
+                    tensor[63, piece.y, piece.x] = 1.0
+
+        # Channel 64-65: Interpose coverage - pieces with Rook LOS protection
+        for piece in alive_pieces:
+            if piece.piece_type == PieceType.ROOK:
+                continue  # Rooks don't protect themselves
+
+            team = piece.team
+            friendly_rooks = [p for p in alive_pieces if p.team == team and p.piece_type == PieceType.ROOK and p.can_use_ability]
+
+            for rook in friendly_rooks:
+                # Check orthogonal LOS within 3 squares
+                dx = piece.x - rook.x
+                dy = piece.y - rook.y
+                if (dx == 0 or dy == 0) and (dx != 0 or dy != 0):  # Orthogonal, not same square
+                    dist = abs(dx) + abs(dy)
+                    if 0 < dist <= 3:
+                        # Check for blocking pieces
+                        step_x = 0 if dx == 0 else (1 if dx > 0 else -1)
+                        step_y = 0 if dy == 0 else (1 if dy > 0 else -1)
+                        blocked = False
+                        cx, cy = rook.x + step_x, rook.y + step_y
+                        while (cx, cy) != (piece.x, piece.y):
+                            if self.get_piece_at(cx, cy) is not None:
+                                blocked = True
+                                break
+                            cx += step_x
+                            cy += step_y
+                        if not blocked:
+                            channel = 64 if team == Team.PLAYER else 65
+                            tensor[channel, piece.y, piece.x] = 1.0
+                            break
+
+        # Channel 66: Consecration targets - damaged pieces in Bishop heal range
+        for piece in alive_pieces:
+            hp_deficit = (piece.max_hp - piece.current_hp) / piece.max_hp
+            if hp_deficit <= 0:
+                continue
+
+            friendly_bishops = [p for p in alive_pieces if p.team == piece.team and p.piece_type == PieceType.BISHOP and p.can_use_ability]
+            for bishop in friendly_bishops:
+                dx = abs(piece.x - bishop.x)
+                dy = abs(piece.y - bishop.y)
+                if dx == dy and 1 <= dx <= 3:  # Diagonal 1-3 squares
+                    tensor[66, piece.y, piece.x] = hp_deficit
+                    break
+
+        # Channel 67: Forcing moves - pieces under attack by lower-value attacker
+        for piece in alive_pieces:
+            piece_value = piece_values.get(piece.piece_type, 0)
+            enemy_team = Team.ENEMY if piece.team == Team.PLAYER else Team.PLAYER
+            enemy_attack_map = black_attack_map if enemy_team == Team.ENEMY else white_attack_map
+
+            if enemy_attack_map[piece.y, piece.x] == 0:
+                continue
+
+            # Check if any attacker is lower value
+            for attacker in alive_pieces:
+                if attacker.team != enemy_team:
+                    continue
+                attacker_squares = self._get_attack_squares(attacker)
+                if (piece.x, piece.y) in attacker_squares:
+                    attacker_value = piece_values.get(attacker.piece_type, 0)
+                    if attacker_value < piece_value or piece.piece_type == PieceType.KING:
+                        tensor[67, piece.y, piece.x] = 1.0
+                        break
+
+        # Channel 68: Enhanced RD combo potential
+        if self.player_royal_decree_turns > 0:
+            for piece in player_pieces:
+                attack_squares = self._get_attack_squares(piece)
+                enemy_count = sum(1 for ep in enemy_pieces if (ep.x, ep.y) in attack_squares)
+                if enemy_count > 0:
+                    tensor[68, piece.y, piece.x] = min(enemy_count / 6.0, 1.0)
+        if self.enemy_royal_decree_turns > 0:
+            for piece in enemy_pieces:
+                attack_squares = self._get_attack_squares(piece)
+                player_count = sum(1 for pp in player_pieces if (pp.x, pp.y) in attack_squares)
+                if player_count > 0:
+                    tensor[68, piece.y, piece.x] = min(player_count / 6.0, 1.0)
+
+        # Channel 69: Pawn promotion distance
+        for piece in alive_pieces:
+            if piece.piece_type == PieceType.PAWN:
+                if piece.team == Team.PLAYER:
+                    dist_to_promo = 7 - piece.y  # White promotes at y=7
+                else:
+                    dist_to_promo = piece.y  # Black promotes at y=0
+                tensor[69, piece.y, piece.x] = (7 - dist_to_promo) / 7.0
+
+        # Channel 70: Enemy RD turns remaining
+        enemy_rd = self.enemy_royal_decree_turns if self.side_to_move == Team.PLAYER else self.player_royal_decree_turns
+        tensor[70, :, :] = enemy_rd / 2.0
+
+        # Channel 71: Enemy abilities ready
+        current_enemy = enemy_pieces if self.side_to_move == Team.PLAYER else player_pieces
+        if current_enemy:
+            enemy_ready = sum(1 for p in current_enemy if p.can_use_ability)
+            tensor[71, :, :] = enemy_ready / len(current_enemy)
+
+        # Channel 72: King proximity map
+        if enemy_king:
+            for piece in player_pieces:
+                dist = abs(piece.x - enemy_king.x) + abs(piece.y - enemy_king.y)
+                tensor[72, piece.y, piece.x] = 1.0 - dist / 14.0
+        if player_king:
+            for piece in enemy_pieces:
+                dist = abs(piece.x - player_king.x) + abs(piece.y - player_king.y)
+                tensor[72, piece.y, piece.x] = 1.0 - dist / 14.0
+
+        # Channel 73: Safe attack squares - where we can attack without counter
+        for y in range(8):
+            for x in range(8):
+                target = self.get_piece_at(x, y)
+                if target is None:
+                    continue
+
+                if target.team == Team.ENEMY:  # White attacking black
+                    if white_attack_map[y, x] > 0 and black_attack_map[y, x] == 0:
+                        tensor[73, y, x] = 1.0
+                else:  # Black attacking white
+                    if black_attack_map[y, x] > 0 and white_attack_map[y, x] == 0:
+                        tensor[73, y, x] = 1.0
+
+        # Channel 74: Enemy ability charges
+        for piece in current_enemy:
+            stats = PIECE_STATS.get(piece.piece_type, {})
+            max_uses = stats.get("ability_max_uses", 0)
+            if max_uses == 0:
+                tensor[74, piece.y, piece.x] = 1.0
+            elif piece.ability_uses_remaining >= 0:
+                tensor[74, piece.y, piece.x] = piece.ability_uses_remaining / max_uses
+
         return tensor
 
     @classmethod
@@ -688,6 +928,7 @@ class GameState:
                 base_damage=p_data["baseDamage"],
                 ability_cooldown=p_data.get("abilityCooldown", 0),
                 ability_used_this_match=p_data.get("abilityUsedThisMatch", False),
+                ability_uses_remaining=p_data.get("abilityUsesRemaining", -1),
                 interpose_active=p_data.get("interposeActive", False),
                 was_pawn=p_data.get("wasPawn", False),
             )
@@ -696,7 +937,8 @@ class GameState:
         return cls(
             pieces=pieces,
             side_to_move=Team(data.get("sideToMove", 0)),
-            royal_decree_active=Team(data["royalDecreeActive"]) if data.get("royalDecreeActive") is not None else None,
+            player_royal_decree_turns=data.get("playerRoyalDecreeTurns", 0),
+            enemy_royal_decree_turns=data.get("enemyRoyalDecreeTurns", 0),
             turn_number=data.get("turnNumber", 0),
             moves_without_damage=data.get("movesWithoutDamage", 0),
             winner=Team(data["winner"]) if data.get("winner") is not None else None,
@@ -718,13 +960,15 @@ class GameState:
                     "baseDamage": p.base_damage,
                     "abilityCooldown": p.ability_cooldown,
                     "abilityUsedThisMatch": p.ability_used_this_match,
+                    "abilityUsesRemaining": p.ability_uses_remaining,
                     "interposeActive": p.interpose_active,
                     "wasPawn": p.was_pawn,
                 }
                 for p in self.pieces
             ],
             "sideToMove": int(self.side_to_move),
-            "royalDecreeActive": int(self.royal_decree_active) if self.royal_decree_active is not None else None,
+            "playerRoyalDecreeTurns": self.player_royal_decree_turns,
+            "enemyRoyalDecreeTurns": self.enemy_royal_decree_turns,
             "turnNumber": self.turn_number,
             "movesWithoutDamage": self.moves_without_damage,
             "winner": int(self.winner) if self.winner is not None else None,
@@ -757,7 +1001,7 @@ def create_initial_state() -> GameState:
 
 
 # Tensor shape constants for network architecture
-INPUT_CHANNELS = 58  # 28 original + 18 strategic + 12 tactical channels
+INPUT_CHANNELS = 75  # 62 original + 13 new tactical/strategic channels
 BOARD_SIZE = 8
 
 
@@ -779,4 +1023,12 @@ CHANNEL_NAMES = [
     "hanging_white", "hanging_black", "defended_white", "defended_black",
     "white_king_attackers", "black_king_attackers", "safe_squares_white_king", "safe_squares_black_king",
     "passed_pawns_white", "passed_pawns_black", "open_files", "damage_potential",
+    # Ability tracking channels (58-61)
+    "ability_charges_remaining", "royal_decree_turns_remaining", "rd_combo_potential", "promoted_pieces",
+    # New tactical/strategic channels (62-74)
+    "threat_map_white", "threat_map_black",
+    "interpose_coverage_white", "interpose_coverage_black",
+    "consecration_targets", "forcing_moves", "rd_combo_enhanced",
+    "pawn_promotion_dist", "enemy_rd_turns", "enemy_abilities_ready",
+    "king_proximity_map", "safe_attack_squares", "enemy_ability_charges",
 ]

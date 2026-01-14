@@ -38,9 +38,7 @@ public partial class CombatResolver : Node
             throw new InvalidOperationException("CombatResolver not initialized");
 
         // Determine modifiers
-        bool royalDecreeActive = attacker.Team == Team.Player
-            ? _gameState.PlayerRoyalDecreeActive
-            : _gameState.EnemyRoyalDecreeActive;
+        int royalDecreeBonus = _gameState.GetRoyalDecreeBonus(attacker.Team);
 
         bool enemyKingThreatened = attacker.Team == Team.Player
             ? _gameState.EnemyKingThreatened
@@ -53,7 +51,7 @@ public partial class CombatResolver : Node
         var diceResult = DiceRoller.RollCombat(
             baseModifier: 0,
             enteredThreatZone: attacker.EnteredThreatZoneThisTurn,
-            royalDecreeActive: royalDecreeActive,
+            royalDecreeBonus: royalDecreeBonus,
             enemyKingWasThreatened: enemyKingThreatened,
             threatPenalty: threatPenalty
         );

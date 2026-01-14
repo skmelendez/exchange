@@ -18,11 +18,15 @@ from __future__ import annotations
 
 import json
 import os
+import io
+import sys
 from pathlib import Path
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 import threading
 import time
+from datetime import datetime
+import subprocess
 
 from .game_state import GameState, PieceType, Team
 from .game_simulator import GameSimulator, Move, MoveType
@@ -86,6 +90,87 @@ DASHBOARD_HTML = """
         }
 
         .board-container { text-align: center; margin-bottom: 20px; }
+
+        .board-area {
+            display: flex;
+            align-items: stretch;
+            justify-content: center;
+            gap: 10px;
+        }
+
+        .eval-bar {
+            width: 60px;
+            display: flex;
+            flex-direction: column;
+            border-radius: 4px;
+            padding: 8px 4px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 11px;
+        }
+        .eval-bar.white-bar {
+            background: #f0f0f0;
+            color: #000;
+        }
+        .eval-bar.black-bar {
+            background: #1a1a1a;
+            color: #fff;
+        }
+        .eval-bar .bar-title {
+            font-weight: bold;
+            text-align: center;
+            margin-bottom: 8px;
+            padding-bottom: 4px;
+            border-bottom: 1px solid;
+        }
+        .eval-bar.white-bar .bar-title { border-color: #ccc; }
+        .eval-bar.black-bar .bar-title { border-color: #444; }
+        .eval-bar .bar-total {
+            font-size: 16px;
+            font-weight: bold;
+            text-align: center;
+            margin-bottom: 8px;
+        }
+        .eval-bar .piece-score {
+            display: flex;
+            justify-content: space-between;
+            padding: 2px 0;
+            font-size: 10px;
+        }
+        .eval-bar .piece-score .piece-name { font-weight: bold; }
+
+        .advantage-bar {
+            width: 100%;
+            height: 20px;
+            background: linear-gradient(to right, #fff 50%, #000 50%);
+            border-radius: 4px;
+            margin: 10px 0;
+            position: relative;
+            overflow: hidden;
+        }
+        .advantage-fill {
+            position: absolute;
+            top: 0;
+            height: 100%;
+            transition: all 0.3s;
+        }
+        .advantage-fill.white-advantage {
+            left: 50%;
+            background: #fff;
+        }
+        .advantage-fill.black-advantage {
+            right: 50%;
+            background: #000;
+        }
+        .advantage-label {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 11px;
+            font-weight: bold;
+            color: #888;
+            text-shadow: 0 0 3px #fff, 0 0 3px #000;
+        }
 
         .board {
             display: inline-grid;
@@ -234,6 +319,18 @@ DASHBOARD_HTML = """
                     <span id="live-indicator" style="display: none;"></span>
                     Watch New Game
                 </button>
+
+                <div style="margin-bottom: 15px; padding: 10px; background: #1a1a2e; border-radius: 4px;">
+                    <h2 style="margin-bottom: 8px;">Analysis Report</h2>
+                    <div style="display: flex; flex-wrap: wrap; gap: 5px;">
+                        <button onclick="downloadAnalysis(50)" style="flex: 1; min-width: 60px; padding: 6px 8px; font-size: 12px;">50</button>
+                        <button onclick="downloadAnalysis(100)" style="flex: 1; min-width: 60px; padding: 6px 8px; font-size: 12px;">100</button>
+                        <button onclick="downloadAnalysis(200)" style="flex: 1; min-width: 60px; padding: 6px 8px; font-size: 12px;">200</button>
+                        <button onclick="downloadAnalysis(500)" style="flex: 1; min-width: 60px; padding: 6px 8px; font-size: 12px;">500</button>
+                        <button onclick="downloadAnalysis(1000)" style="flex: 1; min-width: 60px; padding: 6px 8px; font-size: 12px;">1000</button>
+                    </div>
+                    <div id="analysis-status" style="font-size: 11px; color: #888; margin-top: 5px; text-align: center;"></div>
+                </div>
                 <div style="margin-bottom: 10px;">
                     <label style="color: #888; font-size: 12px;">Iteration:</label>
                     <select id="iteration-filter" onchange="onIterationChange()" style="width: 100%; padding: 8px; border-radius: 4px; background: #1a1a2e; color: #fff; border: 1px solid #333; margin-top: 5px;">
@@ -267,6 +364,26 @@ DASHBOARD_HTML = """
     <script>
         // Piece type mapping: 0=King, 1=Queen, 2=Rook, 3=Bishop, 4=Knight, 5=Pawn
         const PIECE_LETTERS = ['K', 'Q', 'R', 'B', 'N', 'P'];
+        const PIECE_NAMES = ['King', 'Queen', 'Rook', 'Bishop', 'Knight', 'Pawn'];
+        // Material values (King=0 for material calc, but infinite strategic value)
+        const PIECE_VALUES = [0, 9, 5, 3, 3, 1];
+        // Max HP per piece type
+        const PIECE_MAX_HP = [25, 10, 13, 10, 11, 7];
+
+        // Convert string piece type to number (handles both formats)
+        const PIECE_NAME_TO_ID = { 'King': 0, 'Queen': 1, 'Rook': 2, 'Bishop': 3, 'Knight': 4, 'Pawn': 5 };
+        const TEAM_NAME_TO_ID = { 'White': 0, 'Black': 1 };
+
+        function normalizePieceType(pt) {
+            if (typeof pt === 'number') return pt;
+            if (typeof pt === 'string') return PIECE_NAME_TO_ID[pt] ?? -1;
+            return -1;
+        }
+        function normalizeTeam(t) {
+            if (typeof t === 'number') return t;
+            if (typeof t === 'string') return TEAM_NAME_TO_ID[t] ?? 0;
+            return 0;
+        }
 
         let currentGame = null;
         let currentGamePath = null;
@@ -331,22 +448,24 @@ DASHBOARD_HTML = """
             document.getElementById('outcome-filter').value = params.outcome;
         }
 
-        // Watched games tracking
+        // Watched games tracking - uses "<iter>_<gamenum>" format
         function getWatchedGames() {
             const stored = localStorage.getItem('watchedGames');
             return stored ? JSON.parse(stored) : [];
         }
 
-        function markGameAsWatched(gamePath) {
+        function markGameAsWatched(gameId) {
+            // gameId format: "<iter>_<gamenum>" e.g., "50_0001"
             const watched = getWatchedGames();
-            if (!watched.includes(gamePath)) {
-                watched.push(gamePath);
+            if (!watched.includes(gameId)) {
+                watched.push(gameId);
                 localStorage.setItem('watchedGames', JSON.stringify(watched));
             }
         }
 
-        function isGameWatched(gamePath) {
-            return getWatchedGames().includes(gamePath);
+        function isGameWatched(gameId) {
+            // gameId format: "<iter>_<gamenum>" e.g., "50_0001"
+            return getWatchedGames().includes(gameId);
         }
 
         function saveAutoplaySpeed(speed) {
@@ -376,7 +495,8 @@ DASHBOARD_HTML = """
             }
 
             list.innerHTML = games.map(g => {
-                const watched = isGameWatched(g.path);
+                // Use id format "<iter>_<gamenum>" for watched tracking
+                const watched = isGameWatched(g.id);
                 const watchClass = watched ? 'watched' : 'unwatched';
                 const watchLabel = watched ? 'Watched' : 'New';
                 const isActive = currentGamePath === g.path ? 'active' : '';
@@ -387,7 +507,7 @@ DASHBOARD_HTML = """
                 const winnerBg = g.winner === 'WHITE' ? '#444' : g.winner === 'BLACK' ? '#ccc' : '#555';
                 const gameLabel = g.iteration >= 0 ? `Game ${g.game_num.toString().padStart(2, '0')}` : g.id;
                 return `
-                    <li class="${watchClass} ${isActive}" onclick="loadGame('${g.path}')">
+                    <li class="${watchClass} ${isActive}" onclick="loadGame('${g.path}', '${g.id}')">
                         <span style="display: flex; justify-content: space-between; align-items: center;">
                             <span>${gameLabel}</span>
                             <span style="background: ${winnerBg}; color: ${winnerColor}; padding: 2px 6px; border-radius: 3px; font-size: 11px; font-weight: bold;">${g.winner}</span>
@@ -399,15 +519,17 @@ DASHBOARD_HTML = """
             }).join('');
         }
 
-        async function loadGame(path) {
+        async function loadGame(path, gameId) {
             stopAutoplay();
             const response = await fetch('/api/game?path=' + encodeURIComponent(path));
             currentGame = await response.json();
             currentGamePath = path;
             currentMoveIndex = -1;
 
-            // Mark as watched and refresh list to update status
-            markGameAsWatched(path);
+            // Mark as watched using "<iter>_<gamenum>" format and refresh list
+            if (gameId) {
+                markGameAsWatched(gameId);
+            }
             renderGame();
             loadGameList(); // Refresh to show updated watched status
         }
@@ -431,9 +553,25 @@ DASHBOARD_HTML = """
             const view = document.getElementById('game-view');
             view.innerHTML = `
                 <div class="board-container">
-                    <div class="board-wrapper">
-                        <div class="board" id="board"></div>
-                        <svg class="move-overlay" id="move-overlay" width="409" height="409"></svg>
+                    <div class="advantage-bar" id="advantage-bar">
+                        <div class="advantage-fill" id="advantage-fill"></div>
+                        <div class="advantage-label" id="advantage-label">EVEN</div>
+                    </div>
+                    <div class="board-area">
+                        <div class="eval-bar white-bar" id="white-eval">
+                            <div class="bar-title">WHITE</div>
+                            <div class="bar-total" id="white-total">0.0</div>
+                            <div id="white-pieces"></div>
+                        </div>
+                        <div class="board-wrapper">
+                            <div class="board" id="board"></div>
+                            <svg class="move-overlay" id="move-overlay" width="409" height="409"></svg>
+                        </div>
+                        <div class="eval-bar black-bar" id="black-eval">
+                            <div class="bar-title">BLACK</div>
+                            <div class="bar-total" id="black-total">0.0</div>
+                            <div id="black-pieces"></div>
+                        </div>
                     </div>
                 </div>
 
@@ -483,12 +621,19 @@ DASHBOARD_HTML = """
             // Get the move that was just made (if any)
             const move = currentMoveIndex >= 0 ? currentGame.moves[currentMoveIndex] : null;
 
+            // Helper functions - handles both numeric and string formats
+            const getPieceHp = (p) => p && typeof p.currentHp === 'number' ? p.currentHp : 0;
+            const getPieceType = (p) => p ? normalizePieceType(p.pieceType) : -1;
+            const getPieceTeam = (p) => p ? normalizeTeam(p.team) : 0;
+            const getPieceMaxHp = (p) => p && typeof p.maxHp === 'number' ? p.maxHp : (PIECE_MAX_HP[getPieceType(p)] || 10);
+            const getPieceWasPawn = (p) => p && p.wasPawn === true;
+
             // Render board
             let html = '';
             for (let y = 7; y >= 0; y--) {
                 for (let x = 0; x < 8; x++) {
                     const isLight = (x + y) % 2 === 1;
-                    const piece = state.pieces.find(p => p.x === x && p.y === y && p.currentHp > 0);
+                    const piece = state.pieces.find(p => p.x === x && p.y === y && getPieceHp(p) > 0);
 
                     let classes = 'square ' + (isLight ? 'light' : 'dark');
 
@@ -508,12 +653,17 @@ DASHBOARD_HTML = """
                     html += `<div class="${classes}">`;
                     if (piece) {
                         // Show promoted pieces as "PQ", "PN", etc.
-                        let symbol = PIECE_LETTERS[piece.pieceType];
-                        if (piece.wasPawn && piece.pieceType !== 5) {
+                        const pieceType = getPieceType(piece);
+                        const currentHp = getPieceHp(piece);
+                        const maxHp = getPieceMaxHp(piece);
+                        const wasPawn = getPieceWasPawn(piece);
+
+                        let symbol = (pieceType >= 0 && pieceType < PIECE_LETTERS.length) ? PIECE_LETTERS[pieceType] : '?';
+                        if (wasPawn && pieceType !== 5) {
                             symbol = 'P' + symbol;  // e.g., "PQ" for promoted Queen
                         }
-                        const colorClass = piece.team === 0 ? 'white' : 'black';
-                        const hpPct = (piece.currentHp / piece.maxHp) * 100;
+                        const colorClass = getPieceTeam(piece) === 0 ? 'white' : 'black';
+                        const hpPct = maxHp > 0 ? (currentHp / maxHp) * 100 : 0;
                         const hpClass = hpPct > 60 ? 'healthy' : hpPct > 30 ? 'damaged' : 'critical';
 
                         html += `<span class="piece ${colorClass}">${symbol}</span>`;
@@ -549,15 +699,22 @@ DASHBOARD_HTML = """
 
                 // Draw attack line (red) if there was an attack
                 if (move.damage > 0) {
+                    // Check if attack position is valid (not [-1,-1] sentinel)
+                    const hasValidAttack = move.attack &&
+                        Array.isArray(move.attack) &&
+                        move.attack[0] >= 0 && move.attack[1] >= 0;
+
                     let attackTarget;
-                    if (move.attack) {
+                    if (hasValidAttack) {
+                        // Explicit attack position (Knight combo, Overextend, Skirmish)
                         attackTarget = getCenter(move.attack[0], move.attack[1]);
                     } else if (move.move_type === 1) {
-                        // Regular attack - 'to' is the target
+                        // Regular ATTACK - target is at 'to' position
                         attackTarget = getCenter(move.to[0], move.to[1]);
                     }
+
                     if (attackTarget) {
-                        // Draw from piece's current position (after move)
+                        // Draw from piece's current position (after move if it moved)
                         const piecePos = pieceMoved ? getCenter(move.to[0], move.to[1]) : fromCenter;
                         svgContent += `<line class="move-line attack" x1="${piecePos.x}" y1="${piecePos.y}" x2="${attackTarget.x}" y2="${attackTarget.y}" />`;
                     }
@@ -604,21 +761,105 @@ DASHBOARD_HTML = """
             }
 
             // Render piece lists
-            const whitePieces = state.pieces.filter(p => p.team === 0 && p.currentHp > 0);
-            const blackPieces = state.pieces.filter(p => p.team === 1 && p.currentHp > 0);
-            const pieceNames = ['K', 'Q', 'R', 'B', 'N', 'P'];
+            const whitePieces = state.pieces.filter(p => getPieceTeam(p) === 0 && getPieceHp(p) > 0);
+            const blackPieces = state.pieces.filter(p => getPieceTeam(p) === 1 && getPieceHp(p) > 0);
 
             // Helper to get piece symbol (with P prefix for promoted)
             const getPieceSymbol = (p) => {
-                let sym = pieceNames[p.pieceType];
-                if (p.wasPawn && p.pieceType !== 5) sym = 'P' + sym;
+                const pType = getPieceType(p);
+                const wasPawn = getPieceWasPawn(p);
+                let sym = (pType >= 0 && pType < PIECE_LETTERS.length) ? PIECE_LETTERS[pType] : '?';
+                if (wasPawn && pType !== 5) sym = 'P' + sym;
                 return sym;
             };
 
             pieceList.innerHTML = `
-                <span class="white">WHITE: ${whitePieces.map(p => getPieceSymbol(p) + '(' + p.currentHp + ')').join(' ')}</span>
-                <span class="black">BLACK: ${blackPieces.map(p => getPieceSymbol(p) + '(' + p.currentHp + ')').join(' ')}</span>
+                <span class="white">WHITE: ${whitePieces.map(p => getPieceSymbol(p) + '(' + getPieceHp(p) + ')').join(' ')}</span>
+                <span class="black">BLACK: ${blackPieces.map(p => getPieceSymbol(p) + '(' + getPieceHp(p) + ')').join(' ')}</span>
             `;
+
+            // Calculate and render eval bars
+            const calcPieceScore = (p) => {
+                const pType = getPieceType(p);
+                const hp = getPieceHp(p);
+                const maxHp = getPieceMaxHp(p);
+                const materialValue = PIECE_VALUES[pType] || 0;
+                const hpRatio = hp / maxHp;
+                // Score = material value * HP percentage
+                return materialValue * hpRatio;
+            };
+
+            const renderEvalBar = (pieces, containerId, totalId) => {
+                let total = 0;
+                let pieceScores = [];
+
+                // Group by piece type and sum scores
+                const byType = {};
+                pieces.forEach(p => {
+                    const pType = getPieceType(p);
+                    const score = calcPieceScore(p);
+                    total += score;
+                    if (!byType[pType]) byType[pType] = { count: 0, score: 0 };
+                    byType[pType].count++;
+                    byType[pType].score += score;
+                });
+
+                // Render individual piece scores (skip King since value=0)
+                let piecesHtml = '';
+                [1, 2, 3, 4, 5].forEach(pType => {  // Q, R, B, N, P
+                    if (byType[pType]) {
+                        const data = byType[pType];
+                        piecesHtml += `<div class="piece-score">
+                            <span class="piece-name">${PIECE_LETTERS[pType]}×${data.count}</span>
+                            <span>${data.score.toFixed(1)}</span>
+                        </div>`;
+                    }
+                });
+
+                // Add King HP as separate indicator
+                const king = pieces.find(p => getPieceType(p) === 0);
+                if (king) {
+                    const hp = getPieceHp(king);
+                    const maxHp = getPieceMaxHp(king);
+                    piecesHtml += `<div class="piece-score" style="margin-top: 8px; border-top: 1px solid; padding-top: 4px;">
+                        <span class="piece-name">K HP</span>
+                        <span>${hp}/${maxHp}</span>
+                    </div>`;
+                }
+
+                document.getElementById(totalId).textContent = total.toFixed(1);
+                document.getElementById(containerId).innerHTML = piecesHtml;
+            };
+
+            renderEvalBar(whitePieces, 'white-pieces', 'white-total');
+            renderEvalBar(blackPieces, 'black-pieces', 'black-total');
+
+            // Update advantage bar
+            const whiteTotal = whitePieces.reduce((sum, p) => sum + calcPieceScore(p), 0);
+            const blackTotal = blackPieces.reduce((sum, p) => sum + calcPieceScore(p), 0);
+            const maxTotal = Math.max(whiteTotal + blackTotal, 1);
+            const advantage = whiteTotal - blackTotal;
+
+            const advantageFill = document.getElementById('advantage-fill');
+            const advantageLabel = document.getElementById('advantage-label');
+
+            if (Math.abs(advantage) < 0.5) {
+                advantageFill.style.width = '0%';
+                advantageFill.className = 'advantage-fill';
+                advantageLabel.textContent = 'EVEN';
+            } else if (advantage > 0) {
+                // White ahead - fill extends right from center
+                const pct = Math.min((advantage / maxTotal) * 100, 50);
+                advantageFill.style.width = pct + '%';
+                advantageFill.className = 'advantage-fill white-advantage';
+                advantageLabel.textContent = `+${advantage.toFixed(1)} W`;
+            } else {
+                // Black ahead - fill extends left from center
+                const pct = Math.min((Math.abs(advantage) / maxTotal) * 100, 50);
+                advantageFill.style.width = pct + '%';
+                advantageFill.className = 'advantage-fill black-advantage';
+                advantageLabel.textContent = `+${Math.abs(advantage).toFixed(1)} B`;
+            }
         }
 
         function reconstructState(upToMove) {
@@ -627,20 +868,69 @@ DASHBOARD_HTML = """
 
             for (let i = 0; i < upToMove; i++) {
                 const move = currentGame.moves[i];
-                applyMove(state, move);
+                applyMove(state, move, move.turn);
             }
 
             return state;
         }
 
-        function applyMove(state, move) {
+        // Debug mode - set to true in console with: window.MOVE_DEBUG = true
+        window.MOVE_DEBUG = false;
+        const PIECE_CHARS = ['K','Q','R','B','N','P'];
+        const TEAM_CHARS = ['W','B'];
+        const MOVE_TYPE_NAMES = ['MOVE', 'ATTACK', 'MOVE_AND_ATTACK', 'ABILITY'];
+        const ABILITY_NAMES = ['RoyalDecree', 'Overextend', 'Interpose', 'Consecration', 'Skirmish', 'Advance'];
+
+        function pieceStr(p) {
+            if (!p) return 'null';
+            const t = TEAM_CHARS[normalizeTeam(p.team)] || '?';
+            const pt = PIECE_CHARS[normalizePieceType(p.pieceType)] || '?';
+            return `${t}${pt}@(${p.x},${p.y}) HP:${p.currentHp}/${p.maxHp || '?'}`;
+        }
+
+        function applyMove(state, move, turnNum) {
             // Move types: 0=MOVE, 1=ATTACK, 2=MOVE_AND_ATTACK (Knight), 3=ABILITY
             const MOVE = 0, ATTACK = 1, MOVE_AND_ATTACK = 2, ABILITY = 3;
+            const debug = window.MOVE_DEBUG;
 
-            const piece = state.pieces.find(p =>
-                p.x === move.from[0] && p.y === move.from[1] && p.currentHp > 0
-            );
-            if (!piece) return;
+            // Find the piece - need to match by position AND verify piece type/team match
+            // Move uses numeric format, pieces may use string format
+            const expectedTeam = move.team;  // 0=White, 1=Black
+            const expectedType = move.piece_type;  // 0=King, 1=Queen, etc.
+            const moveDesc = `${TEAM_CHARS[expectedTeam]}${PIECE_CHARS[expectedType]} ${MOVE_TYPE_NAMES[move.move_type]}`;
+
+            // First try strict matching: position + type + team
+            let piece = state.pieces.find(p => {
+                if (p.x !== move.from[0] || p.y !== move.from[1] || p.currentHp <= 0) return false;
+                const pTeam = normalizeTeam(p.team);
+                const pType = normalizePieceType(p.pieceType);
+                return pTeam === expectedTeam && pType === expectedType;
+            });
+
+            // If strict match fails, try position-only match (for robustness)
+            let usedFallback = false;
+            if (!piece) {
+                piece = state.pieces.find(p =>
+                    p.x === move.from[0] && p.y === move.from[1] && p.currentHp > 0
+                );
+                if (piece) {
+                    usedFallback = true;
+                    console.warn(`Turn ${turnNum}: FALLBACK MATCH - expected ${moveDesc} at (${move.from[0]},${move.from[1]}), found ${pieceStr(piece)}`);
+                }
+            }
+
+            if (!piece) {
+                console.error(`Turn ${turnNum}: NO PIECE FOUND for ${moveDesc} at (${move.from[0]},${move.from[1]}) - STATE CORRUPTED`);
+                // List all living pieces for debugging
+                const living = state.pieces.filter(p => p.currentHp > 0);
+                console.error(`  Living pieces (${living.length}): ${living.map(pieceStr).join(', ')}`);
+                console.error(`  Move data:`, move);
+                return;
+            }
+
+            if (debug) console.log(`Turn ${turnNum}: ${pieceStr(piece)} - ${MOVE_TYPE_NAMES[move.move_type]}${move.ability_id != null ? ' ' + ABILITY_NAMES[move.ability_id] : ''}`);
+
+            const oldX = piece.x, oldY = piece.y;
 
             // Handle ability moves
             if (move.move_type === ABILITY && move.ability_id !== null && move.ability_id !== undefined) {
@@ -652,21 +942,30 @@ DASHBOARD_HTML = """
                         piece.x = move.to[0];
                         piece.y = move.to[1];
                         piece.currentHp -= 2;  // Self-damage from Overextend
+                        if (debug) console.log(`  Overextend: moved to (${piece.x},${piece.y}), self-damage 2, HP now ${piece.currentHp}`);
                         // Attack damage applied below
                         break;
                     case 2:  // Interpose - no movement
                         break;
                     case 3:  // Consecration - heal ally
-                        // Healing not tracked in move data, skip
+                        // Note: Healing amount not in move data, but ability_target has heal location
+                        if (move.ability_target && move.ability_target[0] >= 0) {
+                            const healTarget = state.pieces.find(p =>
+                                p.x === move.ability_target[0] && p.y === move.ability_target[1] && p.currentHp > 0
+                            );
+                            if (healTarget && debug) console.log(`  Consecration target: ${pieceStr(healTarget)}`);
+                        }
                         break;
                     case 4:  // Skirmish - attack then reposition
                         piece.x = move.to[0];
                         piece.y = move.to[1];
+                        if (debug) console.log(`  Skirmish: repositioned to (${piece.x},${piece.y})`);
                         // Damage applied below
                         break;
                     case 5:  // Advance - move forward
                         piece.x = move.to[0];
                         piece.y = move.to[1];
+                        if (debug) console.log(`  Advance: moved to (${piece.x},${piece.y})`);
                         break;
                 }
             } else {
@@ -675,35 +974,100 @@ DASHBOARD_HTML = """
                 if (move.move_type === MOVE || move.move_type === MOVE_AND_ATTACK) {
                     piece.x = move.to[0];
                     piece.y = move.to[1];
+                    if (debug) console.log(`  Moved: (${oldX},${oldY}) -> (${piece.x},${piece.y})`);
                 }
             }
 
             // Check for pawn promotion (pawn reaches last rank)
-            if (piece.pieceType === 5) {  // Pawn
-                const promotionRank = piece.team === 0 ? 7 : 0;
+            const pieceTypeId = normalizePieceType(piece.pieceType);
+            const teamId = normalizeTeam(piece.team);
+            if (pieceTypeId === 5) {  // Pawn
+                const promotionRank = teamId === 0 ? 7 : 0;
                 if (piece.y === promotionRank) {
-                    piece.pieceType = 1;  // Promote to Queen
+                    console.log(`Turn ${turnNum}: PROMOTION - ${pieceStr(piece)} promoted to Queen!`);
+                    // Preserve string format if that's what was used
+                    piece.pieceType = typeof piece.pieceType === 'string' ? 'Queen' : 1;
                     piece.wasPawn = true;
                 }
             }
 
-            // Apply damage
+            // Apply damage to target
             if (move.damage > 0) {
                 // Determine target position based on move type
                 let targetPos = null;
-                if (move.move_type === MOVE_AND_ATTACK || (move.move_type === ABILITY && move.attack)) {
-                    targetPos = move.attack;  // Knight combo or Skirmish
+
+                // Check if attack position is valid (not [-1,-1] sentinel)
+                const hasValidAttack = move.attack &&
+                    Array.isArray(move.attack) &&
+                    move.attack[0] >= 0 && move.attack[1] >= 0;
+
+                if (move.move_type === MOVE_AND_ATTACK && hasValidAttack) {
+                    targetPos = move.attack;  // Knight combo
                 } else if (move.move_type === ATTACK) {
-                    targetPos = move.to;  // Regular attack
-                } else if (move.move_type === ABILITY && move.ability_id === 1 && move.attack) {
-                    targetPos = move.attack;  // Overextend
+                    targetPos = move.to;  // Regular attack - target is at 'to' position
+                } else if (move.move_type === ABILITY && hasValidAttack) {
+                    targetPos = move.attack;  // Ability with attack (Overextend, Skirmish)
                 }
+
                 if (targetPos) {
                     const target = state.pieces.find(p =>
                         p.x === targetPos[0] && p.y === targetPos[1] && p.currentHp > 0 && p !== piece
                     );
                     if (target) {
+                        const oldHp = target.currentHp;
                         target.currentHp -= move.damage;
+                        if (debug) console.log(`  Damage: ${pieceStr(target)} took ${move.damage} (${oldHp} -> ${target.currentHp})`);
+                        if (target.currentHp <= 0) {
+                            console.log(`Turn ${turnNum}: DEATH - ${TEAM_CHARS[normalizeTeam(target.team)]}${PIECE_CHARS[normalizePieceType(target.pieceType)]} at (${targetPos[0]},${targetPos[1]}) killed!`);
+                        }
+                    } else {
+                        console.error(`Turn ${turnNum}: NO TARGET at (${targetPos[0]},${targetPos[1]}) for ${move.damage} damage - STATE CORRUPTED`);
+                        const living = state.pieces.filter(p => p.currentHp > 0);
+                        console.error(`  Living pieces: ${living.map(pieceStr).join(', ')}`);
+                    }
+                }
+            }
+
+            // Apply interpose damage to a defending Rook (if any)
+            if (move.interpose_blocked && move.interpose_blocked > 0) {
+                // Find which Rook on the defending team could have interposed
+                // Interpose requires: same row or column as attack target, within 3 squares
+                const defendingTeam = 1 - move.team;  // Opposite of attacker
+
+                // Determine attack target position
+                const hasValidAttack = move.attack && Array.isArray(move.attack) && move.attack[0] >= 0;
+                const attackTargetPos = hasValidAttack ? move.attack :
+                    (move.move_type === 1 ? move.to : null);  // ATTACK type targets 'to'
+
+                if (attackTargetPos) {
+                    const [tx, ty] = attackTargetPos;
+
+                    // Check which Rook can interpose (orthogonal LOS within 3 squares)
+                    const canInterpose = (rook) => {
+                        const rx = rook.x, ry = rook.y;
+                        if (rx === tx) return Math.abs(ry - ty) <= 3;  // Same column
+                        if (ry === ty) return Math.abs(rx - tx) <= 3;  // Same row
+                        return false;
+                    };
+
+                    const rooks = state.pieces.filter(p =>
+                        p.currentHp > 0 &&
+                        normalizeTeam(p.team) === defendingTeam &&
+                        normalizePieceType(p.pieceType) === 2 &&  // Rook
+                        canInterpose(p)
+                    );
+
+                    if (rooks.length > 0) {
+                        // If multiple Rooks could interpose, pick one (game engine chose one)
+                        const rook = rooks[0];
+                        const oldHp = rook.currentHp;
+                        rook.currentHp -= move.interpose_blocked;
+                        console.log(`Turn ${turnNum}: INTERPOSE - ${pieceStr(rook)} blocked ${move.interpose_blocked} damage (${oldHp} -> ${rook.currentHp})`);
+                        if (rook.currentHp <= 0) {
+                            console.log(`Turn ${turnNum}: DEATH - Interposing Rook at (${rook.x},${rook.y}) killed!`);
+                        }
+                    } else {
+                        console.warn(`Turn ${turnNum}: INTERPOSE ${move.interpose_blocked} but no Rook in LOS of (${tx},${ty})?`);
                     }
                 }
             }
@@ -813,6 +1177,44 @@ DASHBOARD_HTML = """
             }, REFRESH_INTERVAL_MS);
         }
 
+        async function downloadAnalysis(lastN) {
+            const statusEl = document.getElementById('analysis-status');
+            statusEl.textContent = `Generating analysis for last ${lastN} iterations...`;
+            statusEl.style.color = '#00d4ff';
+
+            try {
+                const response = await fetch(`/api/analysis?last=${lastN}`);
+                if (!response.ok) {
+                    throw new Error('Analysis failed');
+                }
+
+                // Get filename from Content-Disposition header
+                const disposition = response.headers.get('Content-Disposition');
+                let filename = `analysis_${lastN}.txt`;
+                if (disposition) {
+                    const match = disposition.match(/filename="?([^"]+)"?/);
+                    if (match) filename = match[1];
+                }
+
+                // Download the file
+                const blob = await response.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+
+                statusEl.textContent = `Downloaded: ${filename}`;
+                statusEl.style.color = '#4caf50';
+            } catch (error) {
+                statusEl.textContent = `Error: ${error.message}`;
+                statusEl.style.color = '#f44336';
+            }
+        }
+
         // Load games on start (reads URL params) and begin auto-refresh
         loadGameList();
         startGameListRefresh();
@@ -855,11 +1257,81 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             replay = self.play_new_game()
             self.send_json(replay)
 
+        elif path == "/api/analysis":
+            # Run analysis and return as downloadable file
+            last_n = int(query.get("last", ["50"])[0])
+            # Validate last_n
+            if last_n not in [50, 100, 200, 500, 1000]:
+                last_n = 50
+            self.run_and_send_analysis(last_n)
+
         else:
             self.send_error(404)
 
+    def _load_iteration_metadata(self, iter_path: Path) -> dict:
+        """Load or create metadata cache for an iteration folder.
+
+        Returns dict: {game_num: {"winner": str, "moves": int}, ...}
+        """
+        cache_path = iter_path / ".metadata.json"
+        cache = {}
+
+        # Load existing cache
+        if cache_path.exists():
+            try:
+                with open(cache_path) as f:
+                    cache = json.load(f)
+            except:
+                cache = {}
+
+        # Find all game files in this iteration
+        game_files = list(iter_path.glob("game_*.json"))
+        cache_updated = False
+
+        for gf in game_files:
+            game_part = gf.stem.replace("game_", "")
+            try:
+                game_num = int(game_part)
+            except ValueError:
+                continue
+
+            # Skip if already cached
+            if str(game_num) in cache:
+                continue
+
+            # Read game file to extract metadata (only for new games)
+            try:
+                with open(gf) as f:
+                    data = json.load(f)
+                winner_val = data.get("winner")
+                # Handle both int (0/1) and string ("White"/"Black") formats
+                if winner_val in (0, "White", "WHITE"):
+                    winner = "WHITE"
+                elif winner_val in (1, "Black", "BLACK"):
+                    winner = "BLACK"
+                else:
+                    winner = "DRAW"
+                moves = len(data.get("moves", []))
+                cache[str(game_num)] = {"winner": winner, "moves": moves}
+                cache_updated = True
+            except:
+                pass
+
+        # Save updated cache
+        if cache_updated:
+            try:
+                with open(cache_path, "w") as f:
+                    json.dump(cache, f)
+            except:
+                pass
+
+        return cache
+
     def get_game_list(self, iteration: str = "latest", outcome: str = "all") -> dict:
         """Get filtered list of saved replays with metadata.
+
+        Uses per-iteration metadata cache to avoid reading all game files.
+        Only reads game content for files not yet in cache.
 
         Args:
             iteration: "latest", "all", or iteration number as string
@@ -873,41 +1345,52 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         replays_path = Path(self.replays_dir)
 
         if replays_path.exists():
-            # Find all JSON files recursively (handles iter_XXXX/game_XXXX.json structure)
-            all_files = list(replays_path.glob("**/*.json"))
-            # Sort by modification time (newest first)
-            all_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+            # Find all iteration folders
+            iter_folders = [d for d in replays_path.iterdir() if d.is_dir() and d.name.startswith("iter_")]
 
-            for f in all_files:
+            for iter_folder in iter_folders:
+                try:
+                    iter_num = int(iter_folder.name.replace("iter_", ""))
+                    iterations_set.add(iter_num)
+                except ValueError:
+                    continue
+
+                # Load metadata from cache (fast)
+                metadata = self._load_iteration_metadata(iter_folder)
+
+                for game_num_str, meta in metadata.items():
+                    game_num = int(game_num_str)
+                    game_path = iter_folder / f"game_{game_num:04d}.json"
+
+                    all_games.append({
+                        "id": f"{iter_num}_{game_num}",
+                        "path": str(game_path),
+                        "moves": meta["moves"],
+                        "winner": meta["winner"],
+                        "iteration": iter_num,
+                        "game_num": game_num,
+                    })
+
+            # Also handle legacy games not in iter_* folders
+            legacy_files = [f for f in replays_path.glob("*.json") if f.is_file()]
+            for f in legacy_files:
                 try:
                     with open(f) as fp:
                         data = json.load(fp)
-                    winner = "WHITE" if data.get("winner") == 0 else "BLACK" if data.get("winner") == 1 else "DRAW"
-
-                    # Extract iteration and game number from path
-                    rel_path = f.relative_to(replays_path)
-                    parts = rel_path.parts
-                    if len(parts) >= 2:
-                        iter_part = parts[-2].replace("iter_", "")
-                        game_part = parts[-1].replace("game_", "").replace(".json", "")
-                        game_id = f"{winner}_{iter_part}_{game_part}"
-                        iter_num = int(iter_part)
-                        game_num = int(game_part)
+                    winner_val = data.get("winner")
+                    if winner_val in (0, "White", "WHITE"):
+                        winner = "WHITE"
+                    elif winner_val in (1, "Black", "BLACK"):
+                        winner = "BLACK"
                     else:
-                        game_id = f"{winner}_{f.stem}"
-                        iter_num = -1
-                        game_num = 0
-
-                    if iter_num >= 0:
-                        iterations_set.add(iter_num)
-
+                        winner = "DRAW"
                     all_games.append({
-                        "id": game_id,
+                        "id": f"legacy_{f.stem}",
                         "path": str(f),
                         "moves": len(data.get("moves", [])),
                         "winner": winner,
-                        "iteration": iter_num,
-                        "game_num": game_num,
+                        "iteration": -1,
+                        "game_num": 0,
                     })
                 except:
                     pass
@@ -977,6 +1460,95 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(json.dumps(data).encode())
+
+    def send_file(self, content: str, filename: str, content_type: str = "text/plain"):
+        """Send content as a downloadable file."""
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(content.encode())))
+        self.end_headers()
+        self.wfile.write(content.encode())
+
+    def run_and_send_analysis(self, last_n: int):
+        """Run the analysis script and return results as downloadable file."""
+        # Generate timestamp for filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{timestamp}_analysis_last{last_n}.txt"
+
+        # Create analysis directory if it doesn't exist
+        analysis_dir = Path(self.replays_dir).parent / "analysis"
+        analysis_dir.mkdir(exist_ok=True)
+        output_path = analysis_dir / filename
+
+        try:
+            # Run the analysis script and capture output
+            # We need to import and run it directly to capture stdout
+            from io import StringIO
+            import contextlib
+
+            # Capture stdout
+            output_buffer = StringIO()
+
+            # Import the analysis module
+            from scripts import analyze_replays
+
+            # Temporarily replace sys.argv
+            old_argv = sys.argv
+            sys.argv = ['analyze_replays', '--replays', self.replays_dir, '--last', str(last_n)]
+
+            # Capture stdout
+            with contextlib.redirect_stdout(output_buffer):
+                try:
+                    analyze_replays.main()
+                except SystemExit:
+                    pass  # Ignore sys.exit calls
+
+            sys.argv = old_argv
+
+            # Get the output
+            output = output_buffer.getvalue()
+
+            # Save to file
+            with open(output_path, 'w') as f:
+                f.write(output)
+
+            # Send the file
+            self.send_file(output, filename)
+
+        except Exception as e:
+            # If the import approach fails, try subprocess
+            try:
+                # Find the scripts directory
+                scripts_dir = Path(__file__).parent.parent / "scripts"
+                analyze_script = scripts_dir / "analyze_replays.py"
+
+                if analyze_script.exists():
+                    result = subprocess.run(
+                        [sys.executable, str(analyze_script),
+                         '--replays', self.replays_dir,
+                         '--last', str(last_n)],
+                        capture_output=True,
+                        text=True,
+                        timeout=120  # 2 minute timeout
+                    )
+                    output = result.stdout
+
+                    # Save to file
+                    with open(output_path, 'w') as f:
+                        f.write(output)
+
+                    self.send_file(output, filename)
+                else:
+                    self.send_response(500)
+                    self.send_header("Content-Type", "text/plain")
+                    self.end_headers()
+                    self.wfile.write(f"Analysis script not found: {analyze_script}".encode())
+            except Exception as e2:
+                self.send_response(500)
+                self.send_header("Content-Type", "text/plain")
+                self.end_headers()
+                self.wfile.write(f"Analysis failed: {str(e)} / {str(e2)}".encode())
 
     def log_message(self, format, *args):
         # Suppress default logging

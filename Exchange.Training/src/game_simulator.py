@@ -429,31 +429,22 @@ class GameSimulator:
                         ny += dy
 
         elif ability_id == AbilityId.INTERPOSE:
-            # Rook: Damage to adjacent allies split with Rook
-            # Only useful if there are adjacent allies to protect
-            has_adjacent_ally = False
-            for dx, dy in ALL_DIRS:
-                nx, ny = piece.x + dx, piece.y + dy
-                if self.is_on_board(nx, ny):
-                    ally = self.get_piece_at(nx, ny)
-                    if ally and ally.team == piece.team and ally != piece:
-                        has_adjacent_ally = True
-                        break
-            if has_adjacent_ally:
-                moves.append(Move(
-                    piece=piece,
-                    move_type=MoveType.ABILITY,
-                    from_pos=(piece.x, piece.y),
-                    to_pos=(piece.x, piece.y),
-                    ability_id=AbilityId.INTERPOSE,
-                ))
+            # REWORKED: Interpose is now REACTIVE - no proactive ability to activate.
+            # It triggers automatically when an ally within orthogonal LOS (3 squares)
+            # takes damage and Rook has uses remaining and is not on cooldown.
+            # See _apply_damage_with_interpose for the reactive trigger logic.
+            pass  # No moves to generate - reactive ability
 
         elif ability_id == AbilityId.CONSECRATION:
-            # Bishop: Heal diagonal ally 1d6 HP
-            # Find diagonal allies that are damaged
+            # Bishop: Heal diagonal ally 1d6 HP (Range 1-3)
+            CONSECRATION_RANGE = 3
             for dx, dy in DIAGONAL:
-                nx, ny = piece.x + dx, piece.y + dy
-                while self.is_on_board(nx, ny):
+                nx, ny = piece.x, piece.y
+                for _ in range(CONSECRATION_RANGE):
+                    nx += dx
+                    ny += dy
+                    if not self.is_on_board(nx, ny):
+                        break
                     target = self.get_piece_at(nx, ny)
                     if target:
                         if target.team == piece.team and target.current_hp < target.max_hp:
@@ -467,8 +458,6 @@ class GameSimulator:
                                 expected_heal=4,  # Average of 1d6
                             ))
                         break  # Blocked by piece (ally or enemy)
-                    nx += dx
-                    ny += dy
 
         elif ability_id == AbilityId.SKIRMISH:
             # Knight: Attack then reposition 1 tile (can escape after attack)
@@ -520,37 +509,57 @@ class GameSimulator:
 
         return moves
 
-    def make_move(self, move: Move) -> int:
+    def make_move(self, move: Move) -> dict:
         """
-        Execute a move and return damage dealt (if any).
+        Execute a move and return move result with detailed stats.
 
-        Returns the actual damage dealt for training signal.
+        Returns dict with:
+            - damage: total damage dealt
+            - interpose_blocked: damage absorbed by Interposing Rook (if any)
+            - consecration_heal: HP healed by Consecration (if any)
+            - promotion: True if pawn promoted this move
         """
         piece = move.piece
         damage_dealt = 0
+        result = {
+            "damage": 0,
+            "interpose_blocked": 0,
+            "consecration_heal": 0,
+            "promotion": False,
+        }
 
         if move.move_type == MoveType.MOVE:
             # Simple move
             piece.x, piece.y = move.to_pos
 
             # Check pawn promotion
-            self._check_promotion(piece)
+            if self._check_promotion(piece):
+                result["promotion"] = True
 
         elif move.move_type == MoveType.ATTACK:
             # Attack target
             target = self.get_piece_at(*move.to_pos)
             if target:
-                damage_dealt = self._apply_damage(piece, target)
+                dmg_result = self._apply_damage(piece, target)
+                damage_dealt = dmg_result["damage"]
+                result["interpose_blocked"] = dmg_result["interpose_blocked"]
 
         elif move.move_type == MoveType.MOVE_AND_ATTACK:
             # Knight: move then attack
             piece.x, piece.y = move.to_pos
             target = self.get_piece_at(*move.attack_pos)
             if target:
-                damage_dealt = self._apply_damage(piece, target)
+                dmg_result = self._apply_damage(piece, target)
+                damage_dealt = dmg_result["damage"]
+                result["interpose_blocked"] = dmg_result["interpose_blocked"]
 
         elif move.move_type == MoveType.ABILITY:
-            damage_dealt = self._execute_ability(move)
+            ability_result = self._execute_ability(move)
+            damage_dealt = ability_result.get("damage", 0)
+            result["interpose_blocked"] = ability_result.get("interpose_blocked", 0)
+            result["consecration_heal"] = ability_result.get("consecration_heal", 0)
+            if ability_result.get("promotion"):
+                result["promotion"] = True
 
         # Track moves without damage for draw condition
         if damage_dealt > 0:
@@ -564,13 +573,18 @@ class GameSimulator:
         )
         self.state.turn_number += 1
 
+        # Decrement Royal Decree turns for the team that just moved
+        if piece.team == Team.PLAYER and self.state.player_royal_decree_turns > 0:
+            self.state.player_royal_decree_turns -= 1
+        elif piece.team == Team.ENEMY and self.state.enemy_royal_decree_turns > 0:
+            self.state.enemy_royal_decree_turns -= 1
+
         # Tick cooldowns for the team that just moved
         for p in self.state.get_pieces(piece.team):
             if p.ability_cooldown > 0:
                 p.ability_cooldown -= 1
-            # Deactivate Interpose at start of Rook's team's turn
-            if p.piece_type == PieceType.ROOK:
-                p.interpose_active = False
+            # NOTE: Interpose is now reactive (triggers automatically on ally damage)
+            # so we no longer need to deactivate it. Keeping the field for compatibility.
 
         # Decrement Advance cooldown for pawns of the team about to move
         for p in self.state.get_pieces(self.state.side_to_move):
@@ -581,55 +595,113 @@ class GameSimulator:
         self.state.record_position()
         self.state.check_terminal()
 
-        return damage_dealt
+        result["damage"] = damage_dealt
+        return result
 
-    def _apply_damage(self, attacker: Piece, target: Piece) -> int:
-        """Apply combat damage with dice roll."""
+    def _apply_damage(self, attacker: Piece, target: Piece) -> dict:
+        """Apply combat damage with dice roll. Returns dict with damage and interpose_blocked."""
         dice_roll = self._rng.randint(1, 6)
         damage = attacker.base_damage + dice_roll
 
-        # Royal Decree bonus
-        if self.state.royal_decree_active == attacker.team:
-            damage += 1
+        # Royal Decree bonus (+2)
+        damage += self.state.get_royal_decree_bonus(attacker.team)
 
         # Apply damage (potentially split via Interpose)
-        actual_damage = self._apply_damage_with_interpose(target, damage)
+        result = self._apply_damage_with_interpose(target, damage)
 
-        return actual_damage
+        return result
 
-    def _apply_damage_with_interpose(self, target: Piece, damage: int) -> int:
-        """Apply damage to target, potentially splitting with Interposing Rook."""
-        # Check if there's an active Interposing Rook adjacent to target
+    def _apply_damage_with_interpose(self, target: Piece, damage: int) -> dict:
+        """Apply damage to target, potentially splitting with reactive Interposing Rook.
+
+        REWORKED INTERPOSE: Now triggers automatically (reactive) when:
+        1. Target is an ally of a Rook
+        2. Rook has orthogonal LOS to target (same row or column)
+        3. Distance is 1-3 squares
+        4. No blocking pieces in the path
+        5. Rook has ability uses remaining and is not on cooldown
+
+        Returns dict with damage dealt and interpose_blocked amount.
+        """
+        INTERPOSE_RANGE = 3
+
+        # Find a Rook that can reactively Interpose
         for rook in self.state.get_pieces(target.team):
-            if (rook.piece_type == PieceType.ROOK and
-                rook.interpose_active and
-                rook != target):
-                # Check if Rook is adjacent to target
-                dx = abs(rook.x - target.x)
-                dy = abs(rook.y - target.y)
-                if dx <= 1 and dy <= 1 and (dx + dy) > 0:
-                    # Split damage between target and Rook
-                    half_damage = damage // 2
-                    remainder = damage % 2
-                    target.current_hp -= half_damage
-                    rook.current_hp -= (half_damage + remainder)  # Rook takes odd remainder
-                    return damage
+            if rook.piece_type != PieceType.ROOK:
+                continue
+            if rook == target:
+                continue
+            if not rook.can_use_ability:
+                continue  # On cooldown or no charges left
+
+            # Check orthogonal LOS (same row or column)
+            dx = rook.x - target.x
+            dy = rook.y - target.y
+
+            # Must be orthogonal (one axis zero, other non-zero)
+            if not ((dx == 0) != (dy == 0)):  # XOR - exactly one must be 0
+                continue
+
+            dist = abs(dx) + abs(dy)
+            if dist < 1 or dist > INTERPOSE_RANGE:
+                continue
+
+            # Check for blocking pieces in the path
+            blocked = False
+            step_x = 0 if dx == 0 else (1 if dx > 0 else -1)
+            step_y = 0 if dy == 0 else (1 if dy > 0 else -1)
+
+            check_x, check_y = target.x + step_x, target.y + step_y
+            while (check_x, check_y) != (rook.x, rook.y):
+                if self.get_piece_at(check_x, check_y) is not None:
+                    blocked = True
+                    break
+                check_x += step_x
+                check_y += step_y
+
+            if blocked:
+                continue
+
+            # Rook can Interpose! Apply reactive trigger.
+            # Split damage between target and Rook
+            half_damage = damage // 2
+            remainder = damage % 2
+            rook_damage = half_damage + remainder  # Rook takes odd remainder
+
+            target.current_hp -= half_damage
+            rook.current_hp -= rook_damage
+
+            # Consume a use and apply cooldown
+            if rook.ability_uses_remaining > 0:
+                rook.ability_uses_remaining -= 1
+            rook.ability_cooldown = PIECE_STATS[PieceType.ROOK]["cooldown_max"]
+
+            return {"damage": damage, "interpose_blocked": rook_damage}
 
         # No Interpose - apply full damage
         target.current_hp -= damage
-        return damage
+        return {"damage": damage, "interpose_blocked": 0}
 
-    def _execute_ability(self, move: Move) -> int:
-        """Execute an ability move. Returns damage dealt."""
+    def _execute_ability(self, move: Move) -> dict:
+        """Execute an ability move. Returns dict with damage, interpose_blocked, consecration_heal, promotion."""
         piece = move.piece
         ability_id = move.ability_id
-        damage_dealt = 0
+        result = {
+            "damage": 0,
+            "interpose_blocked": 0,
+            "consecration_heal": 0,
+            "promotion": False,
+        }
 
         if ability_id == AbilityId.ROYAL_DECREE:
-            # King: All allied rolls +1 until next turn
-            self.state.royal_decree_active = piece.team
-            piece.ability_used_this_match = True
-            # No cooldown - once per match
+            # King: +2 to all allied rolls for 2 turns (3 charges per match)
+            if piece.team == Team.PLAYER:
+                self.state.player_royal_decree_turns = 2
+            else:
+                self.state.enemy_royal_decree_turns = 2
+            # Decrement charges
+            if piece.ability_uses_remaining > 0:
+                piece.ability_uses_remaining -= 1
 
         elif ability_id == AbilityId.OVEREXTEND:
             # Queen: Move then attack, take 2 self-damage
@@ -637,51 +709,63 @@ class GameSimulator:
             if move.attack_pos:
                 target = self.get_piece_at(*move.attack_pos)
                 if target:
-                    damage_dealt = self._apply_damage(piece, target)
+                    dmg_result = self._apply_damage(piece, target)
+                    result["damage"] = dmg_result["damage"]
+                    result["interpose_blocked"] = dmg_result["interpose_blocked"]
             # Self-damage
             piece.current_hp -= 2
             piece.ability_cooldown = PIECE_STATS[PieceType.QUEEN]["cooldown_max"]
 
         elif ability_id == AbilityId.INTERPOSE:
-            # Rook: Activate damage splitting for adjacent allies
-            piece.interpose_active = True
-            piece.ability_cooldown = PIECE_STATS[PieceType.ROOK]["cooldown_max"]
+            # REWORKED: Interpose is now reactive - this code should never execute
+            # since we no longer generate proactive Interpose moves.
+            # Keeping for backwards compatibility with saved replays.
+            pass
 
         elif ability_id == AbilityId.CONSECRATION:
-            # Bishop: Heal diagonal ally 1d6 HP
+            # Bishop: Heal diagonal ally 1d6 HP (3 uses per match)
             if move.ability_target:
                 target = self.get_piece_at(*move.ability_target)
                 if target and target.team == piece.team:
                     heal = self._rng.randint(1, 6)
-                    # Royal Decree bonus applies to heals too
-                    if self.state.royal_decree_active == piece.team:
-                        heal += 1
+                    # Royal Decree bonus applies to heals too (+2)
+                    heal += self.state.get_royal_decree_bonus(piece.team)
+                    old_hp = target.current_hp
                     target.current_hp = min(target.max_hp, target.current_hp + heal)
+                    actual_heal = target.current_hp - old_hp
+                    result["consecration_heal"] = actual_heal
             piece.ability_cooldown = PIECE_STATS[PieceType.BISHOP]["cooldown_max"]
+            if piece.ability_uses_remaining > 0:
+                piece.ability_uses_remaining -= 1
 
         elif ability_id == AbilityId.SKIRMISH:
-            # Knight: Attack then reposition 1 tile
+            # Knight: Attack then reposition 1 tile (5 uses per match)
             if move.attack_pos:
                 target = self.get_piece_at(*move.attack_pos)
                 if target:
-                    damage_dealt = self._apply_damage(piece, target)
+                    dmg_result = self._apply_damage(piece, target)
+                    result["damage"] = dmg_result["damage"]
+                    result["interpose_blocked"] = dmg_result["interpose_blocked"]
             # Reposition
             piece.x, piece.y = move.to_pos
             piece.ability_cooldown = PIECE_STATS[PieceType.KNIGHT]["cooldown_max"]
+            if piece.ability_uses_remaining > 0:
+                piece.ability_uses_remaining -= 1
 
         elif ability_id == AbilityId.ADVANCE:
             # Pawn: Move forward extra tile
             piece.x, piece.y = move.to_pos
-            self._check_promotion(piece)
+            if self._check_promotion(piece):
+                result["promotion"] = True
             piece.ability_cooldown = PIECE_STATS[PieceType.PAWN]["cooldown_max"]
             piece.advance_cooldown_turns = 2  # Cannot use Advance next turn (decrements each turn)
 
-        return damage_dealt
+        return result
 
-    def _check_promotion(self, piece: Piece) -> None:
-        """Check and apply pawn promotion."""
+    def _check_promotion(self, piece: Piece) -> bool:
+        """Check and apply pawn promotion. Returns True if promoted."""
         if piece.piece_type != PieceType.PAWN:
-            return
+            return False
 
         promotion_row = 7 if piece.team == Team.PLAYER else 0
         if piece.y == promotion_row:
@@ -694,6 +778,8 @@ class GameSimulator:
             piece.current_hp = max(1, int(queen_stats["max_hp"] * hp_ratio))
             piece.base_damage = queen_stats["base_damage"]
             piece.was_pawn = True  # Track that this was a promoted pawn
+            return True
+        return False
 
     def play_random_game(self) -> tuple[GameState, list[tuple[np.ndarray, float]]]:
         """

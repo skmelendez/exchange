@@ -13,6 +13,7 @@ namespace Exchange.Pieces;
 public partial class BishopPiece : BasePiece
 {
     private const int AttackRange = 3; // Limited snipe range for tactical play
+    private const int ConsecrationRange = 3; // Limited heal range
 
     public BishopPiece(Team team) : base(PieceType.Bishop, team) { }
 
@@ -101,7 +102,7 @@ public partial class BishopPiece : BasePiece
     }
 
     /// <summary>
-    /// Gets valid targets for Consecration (diagonal allies, not self)
+    /// Gets valid targets for Consecration (diagonal allies, not self, Range 1-3)
     /// </summary>
     public List<Vector2I> GetHealTargets(GameBoard board)
     {
@@ -110,7 +111,7 @@ public partial class BishopPiece : BasePiece
         foreach (var dir in Vector2IExtensions.DiagonalDirections)
         {
             var current = BoardPosition + dir;
-            while (current.IsOnBoard())
+            for (int range = 1; range <= ConsecrationRange && current.IsOnBoard(); range++)
             {
                 var piece = board.GetPieceAt(current);
                 if (piece != null)

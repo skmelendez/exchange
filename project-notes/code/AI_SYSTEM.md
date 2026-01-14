@@ -213,9 +213,11 @@ For depth 1 or as backup, the original heuristic system remains:
    - Attack creation (new threats from position)
 
 4. ABILITY EVALUATION
-   - Royal Decree: Based on number of attackers
-   - Consecration: Based on ally HP deficit
+   - Royal Decree: **+2 bonus for 2 turns** (**3 uses per match**) - use when multiple allies ready to attack
+   - Consecration: Based on ally HP deficit (Range 1-3, **3 uses per match**)
+   - Skirmish: Attack + reposition value (**5 uses per match**)
    - Advance: Only if safe destination
+   - Interpose: Positional value for ally protection (**5 uses per match**)
 ```
 
 ---
